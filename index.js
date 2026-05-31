@@ -46,6 +46,26 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (symbol_id, timeframe_id)
   );
+
+  CREATE TABLE IF NOT EXISTS sim_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    entry_signal TEXT NOT NULL,
+    close_price REAL,
+    pnl REAL,
+    peak_price REAL,
+    peak_pct REAL,
+    sl_price REAL NOT NULL,
+    tp2_price REAL NOT NULL,
+    tp2_hit REAL,
+    tp4_price REAL NOT NULL,
+    tp4_hit REAL,
+    result TEXT,
+    opened_at TEXT DEFAULT (datetime('now')),
+    closed_at TEXT
+  );
 `);
 
 // Seed timeframes if table is empty
@@ -375,6 +395,70 @@ function formatNotification(ticker, price, results) {
   return parts.join(' ');
 }
 
+async function fetchCurrentPrice(ticker) {
+  const errors = [];
+  try { const { data } = await axios.get(`${BINANCE_API}/api/v3/ticker/price`, { params: { symbol: ticker }, timeout: 10000 }); return parseFloat(data.price); }
+  catch (e) { errors.push(`Binance: ${e.message}`); }
+  try { const { data } = await axios.get(`${OKX_API}/api/v5/market/ticker`, { params: { instId: ticker.replace('USDT', '-USDT') }, timeout: 10000 }); if (data.code === '0') return parseFloat(data.data[0].last); }
+  catch (e) { errors.push(`OKX: ${e.message}`); }
+  try { const { data } = await axios.get(`${MEXC_API}/api/v3/ticker/price`, { params: { symbol: ticker }, timeout: 10000 }); return parseFloat(data.price); }
+  catch (e) { errors.push(`MEXC: ${e.message}`); }
+  throw new Error(`Price fetch failed: ${errors.join('; ')}`);
+}
+
+function openSimTrade(ticker, timeframe, price, signal) {
+  const slPrice = price * 0.98;
+  const tp2Price = price * 1.02;
+  const tp4Price = price * 1.04;
+  db.prepare(`INSERT INTO sim_trades (ticker,timeframe,entry_price,entry_signal,peak_price,peak_pct,sl_price,tp2_price,tp4_price) VALUES (?,?,?,?,?,?,?,?,?)`).run(ticker, timeframe, price, signal, price, 0, slPrice, tp2Price, tp4Price);
+  console.log(`SIM TRADE OPEN: ${ticker} ${timeframe} @ $${price} (SL: $${slPrice.toFixed(2)}, TP4: $${tp4Price.toFixed(2)})`);
+}
+
+function closeSimTrade(id, closePrice, result) {
+  const pnl = ((closePrice - db.prepare('SELECT entry_price FROM sim_trades WHERE id=?').get(id).entry_price) / db.prepare('SELECT entry_price FROM sim_trades WHERE id=?').get(id).entry_price) * 100;
+  db.prepare(`UPDATE sim_trades SET close_price=?, pnl=?, result=?, closed_at=datetime('now') WHERE id=?`).run(closePrice, pnl.toFixed(2), result, id);
+  console.log(`SIM TRADE CLOSE #${id}: ${result} @ $${closePrice} (${pnl.toFixed(2)}%)`);
+}
+
+async function processSimTrades(currentPrices) {
+  const openTrades = db.prepare("SELECT * FROM sim_trades WHERE result IS NULL").all();
+  for (const t of openTrades) {
+    let price = currentPrices[t.ticker];
+    if (!price) {
+      try { price = await fetchCurrentPrice(t.ticker); } catch (e) { continue; }
+    }
+    if (!price || price <= 0) continue;
+
+    // Update peak
+    if (price > t.peak_price) {
+      const peakPct = ((price - t.entry_price) / t.entry_price) * 100;
+      db.prepare('UPDATE sim_trades SET peak_price=?, peak_pct=? WHERE id=?').run(price, peakPct.toFixed(2), t.id);
+    }
+
+    // Check SL (-2%)
+    if (price <= t.sl_price) {
+      return closeSimTrade(t.id, price, 'LOSE');
+    }
+
+    // Check TP 4% (win)
+    if (price >= t.tp4_price) {
+      if (!t.tp2_hit) {
+        db.prepare('UPDATE sim_trades SET tp2_hit=? WHERE id=?').run(t.tp2_price, t.id);
+      }
+      if (!t.tp4_hit) {
+        db.prepare('UPDATE sim_trades SET tp4_hit=? WHERE id=?').run(t.tp4_price, t.id);
+      }
+      return closeSimTrade(t.id, price, 'WIN');
+    }
+
+    // Check TP 2% (milestone only)
+    if (price >= t.tp2_price && !t.tp2_hit) {
+      db.prepare('UPDATE sim_trades SET tp2_hit=? WHERE id=?').run(t.tp2_price, t.id);
+      console.log(`SIM TRADE #${t.id}: TP 2% hit @ $${price}`);
+    }
+  }
+}
+
 async function sendMessage(text) {
   try {
     const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -389,21 +473,35 @@ async function poll() {
   try {
     const state = loadState();
     const changedPairs = [];
+    const currentPrices = {};
 
     for (const [ticker, timeframes] of Object.entries(config.pairs)) {
       try {
         const results = await checkPair(ticker, timeframes);
 
+        currentPrices[ticker] = Object.values(results)[0]?.price || 0;
+
         let hasChange = false;
+        let hasNew = false;
         for (const [tf, r] of Object.entries(results)) {
           const key = `${ticker}_${tf}`;
           const prev = state[key];
-          if (prev !== undefined && prev !== r.isBullish) hasChange = true;
+          if (prev === undefined) { hasNew = true; }
+          else if (prev !== r.isBullish) { hasChange = true; }
+
+          // Entry signal: ST flipped from bearish to bullish
+          if (prev !== undefined && prev === false && r.isBullish === true) {
+            const existing = db.prepare("SELECT id FROM sim_trades WHERE ticker=? AND timeframe=? AND result IS NULL").get(ticker, tf);
+            if (!existing) {
+              openSimTrade(ticker, tf, r.price, `${tf} ST Bullish`);
+            }
+          }
+
           state[key] = r.isBullish;
         }
 
-        if (hasChange) {
-          const price = Object.values(results)[0]?.price || 0;
+        if (hasChange || hasNew) {
+          const price = currentPrices[ticker];
           changedPairs.push(formatNotification(ticker, price, results));
         }
       } catch (e) {
@@ -414,8 +512,11 @@ async function poll() {
 
     saveState(state);
 
+    await processSimTrades(currentPrices);
+
     if (changedPairs.length) {
       await sendMessage(changedPairs.join('\n'));
+      console.log('Sent changes:', changedPairs.join(' | '));
     }
   } catch (e) {
     console.error('Poll error:', e.message);
@@ -485,7 +586,7 @@ function init() {
 
   const VALID_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
 
-  function handleEditPair(chatId, ticker, tfs) {
+  async function handleEditPair(chatId, ticker, tfs) {
     const invalid = tfs.filter(tf => !VALID_TIMEFRAMES.includes(tf));
     if (invalid.length) return bot.sendMessage(chatId, `❌ Timeframe tidak valid: ${invalid.join(', ')}`);
 
@@ -498,6 +599,8 @@ function init() {
       saveConfig();
       bot.sendMessage(chatId, `✅ ${ticker} ditambahkan: ${config.pairs[ticker].join(', ')}`);
     }
+    const status = await checkAndSend(ticker);
+    sendMessage(status);
   }
 
   function handleRemove(chatId, ticker) {
