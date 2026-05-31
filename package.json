@@ -1,0 +1,11 @@
+{
+  "name": "indikratos",
+  "version": "1.0.0",
+  "description": "Telegram bot for supertrend breakout/breakdown alerts",
+  "main": "index.js",
+  "dependencies": {
+    "axios": "^1.7.0",
+    "dotenv": "^17.4.2",
+    "node-telegram-bot-api": "^0.64.0"
+  }
+}
