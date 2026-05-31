@@ -188,22 +188,22 @@ function loadPairs() {
 }
 
 function savePairs() {
-  const getSym = db.prepare('SELECT id FROM symbols WHERE ticker = ?');
   const insSym = db.prepare('INSERT OR IGNORE INTO symbols (ticker) VALUES (?)');
+  const getSym = db.prepare('SELECT id FROM symbols WHERE ticker = ?');
   const getTf = db.prepare('SELECT id FROM timeframes WHERE name = ?');
-  const delST = db.prepare('DELETE FROM symbol_timeframes WHERE symbol_id = ?');
   const insST = db.prepare('INSERT OR IGNORE INTO symbol_timeframes (symbol_id, timeframe_id) VALUES (?, ?)');
 
   const tx = db.transaction(() => {
+    db.prepare('DELETE FROM symbol_timeframes').run();
     for (const [ticker, tfs] of Object.entries(config.pairs)) {
       insSym.run(ticker);
       const sym = getSym.get(ticker);
-      delST.run(sym.id);
       for (const tf of tfs) {
         const t = getTf.get(tf);
         if (t) insST.run(sym.id, t.id);
       }
     }
+    db.prepare('DELETE FROM symbols WHERE id NOT IN (SELECT DISTINCT symbol_id FROM symbol_timeframes)').run();
   });
   tx();
 }
@@ -370,11 +370,8 @@ async function checkPair(ticker, timeframes) {
 
 function formatNotification(ticker, price, results) {
   const exchange = Object.values(results)[0]?.exchange || '';
-  const parts = [`${ticker} $${price.toFixed(2)}`];
-  for (const [tf, r] of Object.entries(results)) {
-    parts.push(`· ${tf} ${r.isBullish ? '🟢' : '🔴'}`);
-  }
-  if (exchange) parts.push(`[${exchange}]`);
+  const priceStr = price < 0.01 ? price.toFixed(8) : price.toFixed(2);
+  const parts = [ticker, ...Object.entries(results).map(([tf, r]) => `${tf}${r.isBullish ? '🟢' : '🔴'}`), `$${priceStr}`, exchange].filter(Boolean);
   return parts.join(' ');
 }
 
@@ -456,7 +453,22 @@ function init() {
 
   function askTicker(chatId, cmd) {
     conv[chatId] = { cmd, step: 'ticker', data: {} };
-    bot.sendMessage(chatId, 'Masukkan ticker:');
+    const pairList = Object.keys(config.pairs);
+    if ((cmd === 'remove' || cmd === 'managepair') && pairList.length) {
+      const rows = [];
+      for (let i = 0; i < pairList.length; i += 2) {
+        const row = [{ text: pairList[i], callback_data: `ticker_${cmd}_${pairList[i]}` }];
+        if (pairList[i + 1]) row.push({ text: pairList[i + 1], callback_data: `ticker_${cmd}_${pairList[i + 1]}` });
+        rows.push(row);
+      }
+      bot.sendMessage(chatId, cmd === 'managepair'
+        ? 'Pilih ticker untuk edit, atau ketik ticker baru:'
+        : 'Pilih ticker atau ketik manual:', {
+        reply_markup: { inline_keyboard: rows }
+      });
+    } else {
+      bot.sendMessage(chatId, 'Masukkan ticker:');
+    }
   }
 
   function askTimeframes(chatId) {
@@ -561,6 +573,15 @@ function init() {
     } else if (data === 'config_cancel') {
       delete conv[chatId];
       bot.sendMessage(chatId, '❌ Interval tidak diubah.');
+    } else if (data.startsWith('ticker_')) {
+      const parts = data.split('_');
+      const cmd = parts[1];
+      const ticker = parts.slice(2).join('_');
+      const session = conv[chatId];
+      if (session && session.step === 'ticker' && session.cmd === cmd) {
+        if (cmd === 'remove') { delete conv[chatId]; return handleRemove(chatId, ticker); }
+        if (cmd === 'managepair') { session.data.ticker = ticker; return askTimeframes(chatId); }
+      }
     }
   });
 
