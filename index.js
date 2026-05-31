@@ -57,6 +57,8 @@ db.exec(`
     pnl REAL,
     peak_price REAL,
     peak_pct REAL,
+    low_price REAL,
+    low_pct REAL,
     sl_price REAL NOT NULL,
     tp2_price REAL NOT NULL,
     tp2_hit REAL,
@@ -180,6 +182,9 @@ function loadConfig() {
     pollIntervalMs: Number(getConfig('pollIntervalMs', '60000')),
     supertrendPeriod: Number(getConfig('supertrendPeriod', '10')),
     supertrendMultiplier: Number(getConfig('supertrendMultiplier', '3')),
+    slPercent: Number(getConfig('slPercent', '-2')),
+    tp1Percent: Number(getConfig('tp1Percent', '2')),
+    tp2Percent: Number(getConfig('tp2Percent', '4')),
     pairs: loadPairs(),
   };
 }
@@ -188,6 +193,9 @@ function saveConfig() {
   upsertConfig('pollIntervalMs', config.pollIntervalMs);
   upsertConfig('supertrendPeriod', config.supertrendPeriod);
   upsertConfig('supertrendMultiplier', config.supertrendMultiplier);
+  upsertConfig('slPercent', config.slPercent);
+  upsertConfig('tp1Percent', config.tp1Percent);
+  upsertConfig('tp2Percent', config.tp2Percent);
   savePairs();
 }
 
@@ -407,11 +415,11 @@ async function fetchCurrentPrice(ticker) {
 }
 
 function openSimTrade(ticker, timeframe, price, signal) {
-  const slPrice = price * 0.98;
-  const tp2Price = price * 1.02;
-  const tp4Price = price * 1.04;
-  db.prepare(`INSERT INTO sim_trades (ticker,timeframe,entry_price,entry_signal,peak_price,peak_pct,sl_price,tp2_price,tp4_price) VALUES (?,?,?,?,?,?,?,?,?)`).run(ticker, timeframe, price, signal, price, 0, slPrice, tp2Price, tp4Price);
-  console.log(`SIM TRADE OPEN: ${ticker} ${timeframe} @ $${price} (SL: $${slPrice.toFixed(2)}, TP4: $${tp4Price.toFixed(2)})`);
+  const slPrice = price * (1 + config.slPercent / 100);
+  const tp1Price = price * (1 + config.tp1Percent / 100);
+  const tp2Price = price * (1 + config.tp2Percent / 100);
+  db.prepare(`INSERT INTO sim_trades (ticker,timeframe,entry_price,entry_signal,peak_price,peak_pct,low_price,low_pct,sl_price,tp2_price,tp4_price) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(ticker, timeframe, price, signal, price, 0, price, 0, slPrice, tp1Price, tp2Price);
+  console.log(`SIM TRADE OPEN: ${ticker} ${timeframe} @ $${price} (SL: $${slPrice.toFixed(2)}, TP2: $${tp2Price.toFixed(2)})`);
 }
 
 function closeSimTrade(id, closePrice, result) {
@@ -429,10 +437,16 @@ async function processSimTrades(currentPrices) {
     }
     if (!price || price <= 0) continue;
 
-    // Update peak
+    // Update PnL, peak & low
+    const pnl = ((price - t.entry_price) / t.entry_price) * 100;
+    db.prepare('UPDATE sim_trades SET pnl=? WHERE id=?').run(pnl.toFixed(2), t.id);
     if (price > t.peak_price) {
-      const peakPct = ((price - t.entry_price) / t.entry_price) * 100;
+      const peakPct = pnl;
       db.prepare('UPDATE sim_trades SET peak_price=?, peak_pct=? WHERE id=?').run(price, peakPct.toFixed(2), t.id);
+    }
+    if (price < t.low_price || t.low_price === null || t.low_price === 0) {
+      const lowPct = pnl;
+      db.prepare('UPDATE sim_trades SET low_price=?, low_pct=? WHERE id=?').run(price, lowPct.toFixed(2), t.id);
     }
 
     // Check SL (-2%)
@@ -649,13 +663,17 @@ function init() {
     for (const [ticker, tfs] of Object.entries(config.pairs)) {
       lines.push(`  ${ticker}: ${tfs.join(', ')}`);
     }
-    lines.push(`\nInterval: ${config.pollIntervalMs / 1000}s`);
-    lines.push(`Supertrend: period ${config.supertrendPeriod}, multiplier ${config.supertrendMultiplier}`);
+    lines.push(`\n<b>Polling</b>: ${config.pollIntervalMs / 1000}s`);
+    lines.push(`<b>Supertrend</b>: period ${config.supertrendPeriod}, multiplier ${config.supertrendMultiplier}`);
+    lines.push(`<b>Simulasi</b>: SL ${config.slPercent}% · TP1 ${config.tp1Percent}% · TP2 ${config.tp2Percent}%`);
     bot.sendMessage(chatId, lines.join('\n'), {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
           [{ text: '⚙️ Ubah interval', callback_data: 'config_interval' }],
+          [{ text: '📉 SL ' + config.slPercent + '%', callback_data: 'config_sl' }],
+          [{ text: '📈 TP1 ' + config.tp1Percent + '%', callback_data: 'config_tp1' }],
+          [{ text: '🎯 TP2 ' + config.tp2Percent + '%', callback_data: 'config_tp2' }],
           [{ text: '❌ Tutup', callback_data: 'config_close' }],
         ]
       }
@@ -671,6 +689,12 @@ function init() {
 
     if (data === 'config_interval') {
       showIntervalPrompt(chatId);
+    } else if (data === 'config_sl' || data === 'config_tp1' || data === 'config_tp2') {
+      const label = { config_sl: 'SL %', config_tp1: 'TP1 %', config_tp2: 'TP2 %' }[data];
+      conv[chatId] = { cmd: 'config', step: data, data: {} };
+      bot.sendMessage(chatId, `Masukkan ${label} baru (contoh: ${data === 'config_sl' ? '-5' : '3'}):`, {
+        reply_markup: { inline_keyboard: [[{ text: '❌ Batal', callback_data: 'config_cancel' }]] }
+      });
     } else if (data === 'config_close') {
       bot.sendMessage(chatId, '❌ Config ditutup.');
     } else if (data === 'config_cancel') {
@@ -706,6 +730,18 @@ function init() {
           saveConfig();
           startPolling();
           bot.sendMessage(chatId, `✅ Interval polling diubah ke ${secs}s`);
+          return showConfigMenu(chatId);
+        }
+        if (session.step === 'config_sl' || session.step === 'config_tp1' || session.step === 'config_tp2') {
+          delete conv[chatId];
+          const val = parseFloat(text);
+          if (isNaN(val)) return bot.sendMessage(chatId, '❌ Masukkan angka yang valid.');
+          if (session.step === 'config_sl') { config.slPercent = val; }
+          else if (session.step === 'config_tp1') { config.tp1Percent = val; }
+          else if (session.step === 'config_tp2') { config.tp2Percent = val; }
+          saveConfig();
+          const label = { config_sl: 'SL', config_tp1: 'TP1', config_tp2: 'TP2' }[session.step];
+          bot.sendMessage(chatId, `✅ ${label} diubah ke ${val}%`);
           return showConfigMenu(chatId);
         }
       }

@@ -148,12 +148,13 @@ ${analysis.length === 0 ? '<tr><td colspan="9" style="text-align:center;color:#8
 <table>
 <thead><tr>
   <th>#</th><th>Ticker</th><th>TF</th><th>Signal</th><th>Entry</th><th>Close</th><th>PnL</th>
-  <th>Peak</th><th>SL</th><th>TP 2%</th><th>TP 4%</th><th>Result</th><th>Opened</th><th>Closed</th>
+  <th>Peak</th><th>Low</th><th>SL</th><th>TP1</th><th>TP2</th><th>Result</th><th>Opened</th><th>Closed</th>
 </tr></thead>
 <tbody>
 ${trades.map(t => {
   const pnlColor = t.pnl >= 0 ? 'pct-green' : 'pct-red';
   const peakPctColor = t.peak_pct >= 0 ? 'pct-green' : 'pct-red';
+  const lowPctColor = t.low_pct >= 0 ? 'pct-green' : 'pct-red';
   const badgeClass = !t.result ? 'badge-open' : t.result === 'WIN' ? 'badge-win' : 'badge-lose';
   const badgeText = !t.result ? 'OPEN' : t.result;
   return `<tr>
@@ -165,6 +166,7 @@ ${trades.map(t => {
     <td>${t.close_price ? '$' + t.close_price.toFixed(t.close_price < 0.01 ? 8 : 2) : '-'}</td>
     <td class="${pnlColor}">${t.pnl !== null ? t.pnl + '%' : '-'}</td>
     <td class="${peakPctColor}">${t.peak_pct !== null ? t.peak_pct + '%' : '-'}</td>
+    <td class="${lowPctColor}">${t.low_pct !== null ? t.low_pct + '%' : '-'}</td>
     <td>$${t.sl_price.toFixed(t.sl_price < 0.01 ? 8 : 2)}</td>
     <td>${t.tp2_hit ? '✅ $' + t.tp2_hit.toFixed(t.tp2_hit < 0.01 ? 8 : 2) : '❌'}</td>
     <td>${t.tp4_hit ? '✅ $' + t.tp4_hit.toFixed(t.tp4_hit < 0.01 ? 8 : 2) : '❌'}</td>
@@ -173,7 +175,7 @@ ${trades.map(t => {
     <td style="font-size:11px;color:#8b949e;">${t.closed_at || '-'}</td>
   </tr>`;
 }).join('')}
-${trades.length === 0 ? '<tr><td colspan="14" style="text-align:center;color:#8b949e;">Belum ada trade</td></tr>' : ''}
+${trades.length === 0 ? '<tr><td colspan="15" style="text-align:center;color:#8b949e;">Belum ada trade</td></tr>' : ''}
 </tbody>
 </table>
 </div>
