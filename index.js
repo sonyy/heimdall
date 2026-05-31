@@ -1,108 +1,294 @@
 require('dotenv').config();
 const axios = require('axios');
 const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
+const { ATR } = require('technicalindicators');
+const Database = require('better-sqlite3');
 const path = require('path');
 
-const CONFIG_PATH = path.join(__dirname, 'config.json');
-const STATE_PATH = path.join(__dirname, 'state.json');
+const DB_PATH = path.join(__dirname, 'indikratos.db');
 
 const BINANCE_API = 'https://api.binance.com';
+const OKX_API = 'https://www.okx.com';
+const MEXC_API = 'https://api.mexc.com';
+const BITGET_API = 'https://api.bitget.com';
 
-const SYMBOL_MAP = {
-  BTC: 'BTCUSDT',
-  ETH: 'ETHUSDT',
-  SOL: 'SOLUSDT',
-  HYPE: 'HYPEUSDT',
-};
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
-const VALID_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
+db.exec(`
+  CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS timeframes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+  );
+
+  CREATE TABLE IF NOT EXISTS symbol_timeframes (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE CASCADE,
+    PRIMARY KEY (symbol_id, timeframe_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS supertrend_state (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    timeframe_id INTEGER NOT NULL REFERENCES timeframes(id) ON DELETE CASCADE,
+    is_bullish INTEGER NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol_id, timeframe_id)
+  );
+`);
+
+// Seed timeframes if table is empty
+const tfCount = db.prepare('SELECT COUNT(*) as c FROM timeframes').get().c;
+if (tfCount === 0) {
+  const ins = db.prepare('INSERT OR IGNORE INTO timeframes (name) VALUES (?)');
+  for (const name of ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']) {
+    ins.run(name);
+  }
+}
+
+// Migrate from old flat pairs/state tables if they exist
+const hasOldPairs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='pairs'").get();
+if (hasOldPairs) {
+  const oldPairs = db.prepare('SELECT ticker, timeframe FROM pairs').all();
+  const oldState = db.prepare('SELECT ticker, timeframe, is_bullish FROM state').all();
+  const oldCfg = db.prepare('SELECT key, value FROM config').all();
+
+  const insSym = db.prepare('INSERT OR IGNORE INTO symbols (ticker) VALUES (?)');
+  const getTfId = db.prepare('SELECT id FROM timeframes WHERE name = ?');
+  const insST = db.prepare('INSERT OR IGNORE INTO symbol_timeframes (symbol_id, timeframe_id) VALUES (?, ?)');
+  const insSs = db.prepare('INSERT OR REPLACE INTO supertrend_state (symbol_id, timeframe_id, is_bullish) VALUES (?, ?, ?)');
+
+  const tx = db.transaction(() => {
+    const symIds = {};
+    for (const r of oldPairs) {
+      if (!symIds[r.ticker]) {
+        insSym.run(r.ticker);
+        symIds[r.ticker] = db.prepare('SELECT id FROM symbols WHERE ticker = ?').get(r.ticker).id;
+      }
+      const tf = getTfId.get(r.timeframe);
+      if (tf) insST.run(symIds[r.ticker], tf.id);
+    }
+    for (const r of oldState) {
+      if (!symIds[r.ticker]) {
+        insSym.run(r.ticker);
+        symIds[r.ticker] = db.prepare('SELECT id FROM symbols WHERE ticker = ?').get(r.ticker).id;
+      }
+      const tf = getTfId.get(r.timeframe);
+      if (tf && r.ticker) insSs.run(symIds[r.ticker], tf.id, r.is_bullish);
+    }
+  });
+  tx();
+
+  db.exec('DROP TABLE IF EXISTS pairs; DROP TABLE IF EXISTS state;');
+}
+
+// Migrate from JSON files if config table is empty (fresh DB, no migration from old tables)
+const cfgCount = db.prepare('SELECT COUNT(*) as c FROM config').get().c;
+if (cfgCount === 0) {
+  const fs = require('fs');
+  const cfgPath = path.join(__dirname, 'config.json');
+  const stPath = path.join(__dirname, 'state.json');
+
+  if (fs.existsSync(cfgPath)) {
+    try {
+      const oldCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      upsertConfig('pollIntervalMs', oldCfg.pollIntervalMs ?? 60000);
+      upsertConfig('supertrendPeriod', oldCfg.supertrendPeriod ?? 10);
+      upsertConfig('supertrendMultiplier', oldCfg.supertrendMultiplier ?? 3);
+
+      const insSym = db.prepare('INSERT OR IGNORE INTO symbols (ticker) VALUES (?)');
+      const getSym = db.prepare('SELECT id FROM symbols WHERE ticker = ?');
+      const getTf = db.prepare('SELECT id FROM timeframes WHERE name = ?');
+      const insST = db.prepare('INSERT OR IGNORE INTO symbol_timeframes (symbol_id, timeframe_id) VALUES (?, ?)');
+
+      for (const [ticker, tfs] of Object.entries(oldCfg.pairs || {})) {
+        insSym.run(ticker);
+        const sym = getSym.get(ticker);
+        for (const tf of tfs) {
+          const t = getTf.get(tf);
+          if (t) insST.run(sym.id, t.id);
+        }
+      }
+    } catch (e) { console.error('Migrate config.json error:', e.message); }
+  }
+
+  if (fs.existsSync(stPath)) {
+    try {
+      const oldState = JSON.parse(fs.readFileSync(stPath, 'utf8'));
+      const getSym = db.prepare('SELECT id FROM symbols WHERE ticker = ?');
+      const getTf = db.prepare('SELECT id FROM timeframes WHERE name = ?');
+      const insSs = db.prepare('INSERT OR REPLACE INTO supertrend_state (symbol_id, timeframe_id, is_bullish) VALUES (?, ?, ?)');
+
+      for (const [key, bullish] of Object.entries(oldState)) {
+        const parts = key.split('_');
+        const ticker = parts.slice(0, -1).join('_'); // handle tickers with underscores
+        const timeframe = parts[parts.length - 1];
+        if (!ticker || !timeframe) continue;
+
+        const sym = getSym.get(ticker);
+        if (!sym) continue;
+        const t = getTf.get(timeframe);
+        if (!t) continue;
+        insSs.run(sym.id, t.id, bullish ? 1 : 0);
+      }
+    } catch (e) { console.error('Migrate state.json error:', e.message); }
+  }
+}
+
+function upsertConfig(key, value) {
+  db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, String(value));
+}
+
+function getConfig(key, def) {
+  const row = db.prepare('SELECT value FROM config WHERE key = ?').get(key);
+  return row ? row.value : def;
+}
+
+function loadConfig() {
+  return {
+    pollIntervalMs: Number(getConfig('pollIntervalMs', '60000')),
+    supertrendPeriod: Number(getConfig('supertrendPeriod', '10')),
+    supertrendMultiplier: Number(getConfig('supertrendMultiplier', '3')),
+    pairs: loadPairs(),
+  };
+}
+
+function saveConfig() {
+  upsertConfig('pollIntervalMs', config.pollIntervalMs);
+  upsertConfig('supertrendPeriod', config.supertrendPeriod);
+  upsertConfig('supertrendMultiplier', config.supertrendMultiplier);
+  savePairs();
+}
+
+function loadPairs() {
+  const rows = db.prepare(`
+    SELECT s.ticker, t.name as timeframe
+    FROM symbols s
+    JOIN symbol_timeframes st ON st.symbol_id = s.id
+    JOIN timeframes t ON t.id = st.timeframe_id
+    ORDER BY s.ticker, t.id
+  `).all();
+  const pairs = {};
+  for (const r of rows) {
+    if (!pairs[r.ticker]) pairs[r.ticker] = [];
+    pairs[r.ticker].push(r.timeframe);
+  }
+  return pairs;
+}
+
+function savePairs() {
+  const getSym = db.prepare('SELECT id FROM symbols WHERE ticker = ?');
+  const insSym = db.prepare('INSERT OR IGNORE INTO symbols (ticker) VALUES (?)');
+  const getTf = db.prepare('SELECT id FROM timeframes WHERE name = ?');
+  const delST = db.prepare('DELETE FROM symbol_timeframes WHERE symbol_id = ?');
+  const insST = db.prepare('INSERT OR IGNORE INTO symbol_timeframes (symbol_id, timeframe_id) VALUES (?, ?)');
+
+  const tx = db.transaction(() => {
+    for (const [ticker, tfs] of Object.entries(config.pairs)) {
+      insSym.run(ticker);
+      const sym = getSym.get(ticker);
+      delST.run(sym.id);
+      for (const tf of tfs) {
+        const t = getTf.get(tf);
+        if (t) insST.run(sym.id, t.id);
+      }
+    }
+  });
+  tx();
+}
+
+function loadState() {
+  const rows = db.prepare(`
+    SELECT s.ticker, t.name as timeframe, ss.is_bullish
+    FROM supertrend_state ss
+    JOIN symbols s ON s.id = ss.symbol_id
+    JOIN timeframes t ON t.id = ss.timeframe_id
+  `).all();
+  const state = {};
+  for (const r of rows) {
+    state[`${r.ticker}_${r.timeframe}`] = Boolean(r.is_bullish);
+  }
+  return state;
+}
+
+function saveState(state) {
+  const getSym = db.prepare('SELECT id FROM symbols WHERE ticker = ?');
+  const getTf = db.prepare('SELECT id FROM timeframes WHERE name = ?');
+  const insSs = db.prepare('INSERT OR REPLACE INTO supertrend_state (symbol_id, timeframe_id, is_bullish) VALUES (?, ?, ?)');
+
+  db.prepare('DELETE FROM supertrend_state').run();
+  const tx = db.transaction(() => {
+    for (const [key, bullish] of Object.entries(state)) {
+      const parts = key.split('_');
+      const ticker = parts.slice(0, -1).join('_');
+      const timeframe = parts[parts.length - 1];
+      const sym = getSym.get(ticker);
+      const t = getTf.get(timeframe);
+      if (sym && t) insSs.run(sym.id, t.id, bullish ? 1 : 0);
+    }
+  });
+  tx();
+}
 
 let config = loadConfig();
 let bot;
 let pollTimer = null;
 let running = true;
-const conv = {}; // chatId -> { cmd, step, data }
-
-function loadConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } catch {
-    return {
-      pollIntervalMs: 60000,
-      supertrendPeriod: 10,
-      supertrendMultiplier: 3,
-      pairs: { BTC: ['15m', '1h'], ETH: ['4h', '1d', '1w'], SOL: ['5m', '15m'], HYPE: ['15m', '1h', '4h'] },
-    };
-  }
-}
-
-function saveConfig() {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-}
-
-function loadState() {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
-  } catch {
-    return {};
-  }
-}
-
-function saveState(state) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-}
+const conv = {};
 
 function calcSupertrend(klines, period, multiplier) {
   const high = klines.map(k => parseFloat(k[2]));
   const low = klines.map(k => parseFloat(k[3]));
   const close = klines.map(k => parseFloat(k[4]));
-  const len = klines.length;
 
-  if (len < period + 1) return null;
+  const atrValues = ATR.calculate({ high, low, close, period });
+  const hl2 = high.map((h, i) => (h + low[i]) / 2);
+  const startIdx = close.length - atrValues.length;
 
-  const tr = new Array(len);
-  tr[0] = high[0] - low[0];
-  for (let i = 1; i < len; i++) {
-    tr[i] = Math.max(high[i] - low[i], Math.abs(high[i] - close[i - 1]), Math.abs(low[i] - close[i - 1]));
-  }
+  let finalUpper = 0;
+  let finalLower = 0;
+  let direction = 1;
+  let prevDirection = 1;
 
-  const atr = new Array(len);
-  let sum = 0;
-  for (let i = 0; i < period; i++) sum += tr[i];
-  atr[period - 1] = sum / period;
-  for (let i = period; i < len; i++) {
-    atr[i] = (tr[i] + atr[i - 1] * (period - 1)) / period;
-  }
+  for (let i = startIdx; i < close.length; i++) {
+    const atr = atrValues[i - startIdx];
+    const basicUpper = hl2[i] + multiplier * atr;
+    const basicLower = hl2[i] - multiplier * atr;
 
-  const direction = new Array(len).fill(1);
-  const upperBand = new Array(len).fill(0);
-  const lowerBand = new Array(len).fill(0);
-
-  for (let i = period - 1; i < len; i++) {
-    const hl2 = (high[i] + low[i]) / 2;
-    let upper = hl2 + multiplier * atr[i];
-    let lower = hl2 - multiplier * atr[i];
-
-    if (i === period - 1) {
-      direction[i] = close[i] > hl2 ? 1 : -1;
+    if (i === startIdx) {
+      finalUpper = basicUpper;
+      finalLower = basicLower;
+      direction = close[i] > hl2[i] ? 1 : -1;
     } else {
-      if (direction[i - 1] === 1 && close[i] <= upperBand[i - 1]) direction[i] = -1;
-      else if (direction[i - 1] === -1 && close[i] >= lowerBand[i - 1]) direction[i] = 1;
-      else direction[i] = direction[i - 1];
+      const prevFU = finalUpper;
+      const prevFL = finalLower;
+      finalUpper = (basicUpper < prevFU || close[i - 1] > prevFU) ? basicUpper : prevFU;
+      finalLower = (basicLower > prevFL || close[i - 1] < prevFL) ? basicLower : prevFL;
 
-      if (direction[i] === 1) lower = Math.max(lower, lowerBand[i - 1]);
-      else upper = Math.min(upper, upperBand[i - 1]);
+      prevDirection = direction;
+      if (direction === 1) {
+        direction = close[i] > finalLower ? 1 : -1;
+      } else {
+        direction = close[i] < finalUpper ? -1 : 1;
+      }
     }
-
-    upperBand[i] = upper;
-    lowerBand[i] = lower;
   }
 
-  return { isBullish: direction[len - 1] === 1, wasBullish: direction[len - 2] === 1, price: close[len - 1] };
+  return { isBullish: direction === 1, wasBullish: prevDirection === 1, price: close[close.length - 1] };
 }
 
-async function fetchKlines(symbol, interval, limit = 200) {
+async function fetchBinance(symbol, interval, limit) {
   const { data } = await axios.get(`${BINANCE_API}/api/v3/klines`, {
     params: { symbol, interval, limit },
     timeout: 10000,
@@ -110,25 +296,85 @@ async function fetchKlines(symbol, interval, limit = 200) {
   return data;
 }
 
-async function checkPair(ticker, timeframes) {
-  const symbol = SYMBOL_MAP[ticker];
-  if (!symbol) throw new Error(`Unknown ticker: ${ticker}`);
+async function fetchOkx(symbol, interval, limit) {
+  const instId = symbol.replace('USDT', '-USDT');
+  const bar = interval.replace(/h$/, 'H').replace(/d$/, 'D').replace(/w$/, 'W');
+  const { data } = await axios.get(`${OKX_API}/api/v5/market/candles`, {
+    params: { instId, bar, limit },
+    timeout: 10000,
+  });
+  if (data.code !== '0') throw new Error(`OKX error: ${data.msg}`);
+  return data.data;
+}
 
+async function fetchBitget(symbol, interval, limit) {
+  const { data } = await axios.get(`${BITGET_API}/api/v2/market/candles`, {
+    params: { symbol, granularity: interval, limit },
+    timeout: 10000,
+  });
+  if (data.code !== '00000') throw new Error(`Bitget error: ${data.msg}`);
+  return data.data;
+}
+
+async function fetchMexc(symbol, interval, limit) {
+  const { data } = await axios.get(`${MEXC_API}/api/v3/klines`, {
+    params: { symbol, interval, limit },
+    timeout: 10000,
+  });
+  return data;
+}
+
+async function fetchKlines(symbol, interval, limit = 200) {
+  const errors = [];
+  try { const d = await fetchBinance(symbol, interval, limit); return { exchange: 'Binance', data: d }; }
+  catch (e) { errors.push(`Binance: ${e.message}`); }
+
+  try { const d = await fetchOkx(symbol, interval, limit); return { exchange: 'OKX', data: d }; }
+  catch (e) { errors.push(`OKX: ${e.message}`); }
+
+  try { const d = await fetchMexc(symbol, interval, limit); return { exchange: 'MEXC', data: d }; }
+  catch (e) { errors.push(`MEXC: ${e.message}`); }
+
+  try { const d = await fetchBitget(symbol, interval, limit); return { exchange: 'Bitget', data: d }; }
+  catch (e) { errors.push(`Bitget: ${e.message}`); }
+
+  // Retry with USDT suffix if original symbol doesn't end with USDT
+  if (!symbol.endsWith('USDT')) {
+    const usdtSymbol = symbol + 'USDT';
+    const usdtErrors = [];
+    try { const d = await fetchBinance(usdtSymbol, interval, limit); return { exchange: 'Binance', data: d }; }
+    catch (e) { usdtErrors.push(`Binance: ${e.message}`); }
+    try { const d = await fetchOkx(usdtSymbol, interval, limit); return { exchange: 'OKX', data: d }; }
+    catch (e) { usdtErrors.push(`OKX: ${e.message}`); }
+    try { const d = await fetchMexc(usdtSymbol, interval, limit); return { exchange: 'MEXC', data: d }; }
+    catch (e) { usdtErrors.push(`MEXC: ${e.message}`); }
+    try { const d = await fetchBitget(usdtSymbol, interval, limit); return { exchange: 'Bitget', data: d }; }
+    catch (e) { usdtErrors.push(`Bitget: ${e.message}`); }
+    errors.push(`with USDT: ${usdtErrors.join('; ')}`);
+  }
+
+  throw new Error(`All candle sources failed: ${errors.join('; ')}`);
+}
+
+async function checkPair(ticker, timeframes) {
   const results = {};
   for (const tf of timeframes) {
-    const klines = await fetchKlines(symbol, tf);
-    const st = calcSupertrend(klines, config.supertrendPeriod, config.supertrendMultiplier);
+    const { exchange, data } = await fetchKlines(ticker, tf);
+    const st = calcSupertrend(data, config.supertrendPeriod, config.supertrendMultiplier);
     if (!st) continue;
+    st.exchange = exchange;
     results[tf] = st;
   }
   return results;
 }
 
 function formatNotification(ticker, price, results) {
+  const exchange = Object.values(results)[0]?.exchange || '';
   const parts = [`${ticker} $${price.toFixed(2)}`];
   for (const [tf, r] of Object.entries(results)) {
     parts.push(`· ${tf} ${r.isBullish ? '🟢' : '🔴'}`);
   }
+  if (exchange) parts.push(`[${exchange}]`);
   return parts.join(' ');
 }
 
@@ -165,6 +411,7 @@ async function poll() {
         }
       } catch (e) {
         console.error(`Error checking ${ticker}:`, e.message);
+        changedPairs.push(`⚠️ ${ticker}: ${e.message}`);
       }
     }
 
@@ -214,18 +461,31 @@ function init() {
 
   function askTimeframes(chatId) {
     conv[chatId].step = 'timeframes';
-    bot.sendMessage(chatId, 'Masukkan timeframe (pisahkan dengan koma, misal: 15m,1h,4h):');
+    bot.sendMessage(chatId, 'Masukkan timeframe (pisahkan dengan koma):\n\n'
+      + '<b>Menit:</b> 1m, 3m, 5m, 15m, 30m\n'
+      + '<b>Jam:</b> 1h, 2h, 4h, 6h, 8h, 12h\n'
+      + '<b>Hari:</b> 1d, 3d\n'
+      + '<b>Minggu:</b> 1w\n'
+      + '<b>Bulan:</b> 1M\n\n'
+      + 'Contoh: <code>15m,1h,4h</code>\n'
+      + '<i>* Jika pair sudah ada, timeframe akan diganti total (overwrite)</i>', { parse_mode: 'HTML' });
   }
 
-  function handleAdd(chatId, ticker, tfs) {
+  const VALID_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
+
+  function handleEditPair(chatId, ticker, tfs) {
     const invalid = tfs.filter(tf => !VALID_TIMEFRAMES.includes(tf));
     if (invalid.length) return bot.sendMessage(chatId, `❌ Timeframe tidak valid: ${invalid.join(', ')}`);
-    if (!config.pairs[ticker]) config.pairs[ticker] = [];
-    for (const tf of tfs) {
-      if (!config.pairs[ticker].includes(tf)) config.pairs[ticker].push(tf);
+
+    if (config.pairs[ticker]) {
+      config.pairs[ticker] = tfs;
+      saveConfig();
+      bot.sendMessage(chatId, `✅ ${ticker} diupdate: ${config.pairs[ticker].join(', ')}`);
+    } else {
+      config.pairs[ticker] = tfs;
+      saveConfig();
+      bot.sendMessage(chatId, `✅ ${ticker} ditambahkan: ${config.pairs[ticker].join(', ')}`);
     }
-    saveConfig();
-    bot.sendMessage(chatId, `✅ ${ticker} ditambahkan: ${config.pairs[ticker].join(', ')}`);
   }
 
   function handleRemove(chatId, ticker) {
@@ -235,33 +495,22 @@ function init() {
     bot.sendMessage(chatId, `✅ ${ticker} dihapus dari monitoring.`);
   }
 
-  function handleAddtf(chatId, ticker, tfs) {
-    if (!config.pairs[ticker]) return bot.sendMessage(chatId, `❌ ${ticker} tidak ada.`);
-    const invalid = tfs.filter(tf => !VALID_TIMEFRAMES.includes(tf));
-    if (invalid.length) return bot.sendMessage(chatId, `❌ Timeframe tidak valid: ${invalid.join(', ')}`);
-    for (const tf of tfs) {
-      if (!config.pairs[ticker].includes(tf)) config.pairs[ticker].push(tf);
-    }
-    saveConfig();
-    bot.sendMessage(chatId, `✅ ${ticker} timeframes: ${config.pairs[ticker].join(', ')}`);
-  }
-
-  function handleRemovetf(chatId, ticker, tfs) {
-    if (!config.pairs[ticker]) return bot.sendMessage(chatId, `❌ ${ticker} tidak ada.`);
-    config.pairs[ticker] = config.pairs[ticker].filter(tf => !tfs.includes(tf));
-    if (!config.pairs[ticker].length) delete config.pairs[ticker];
-    saveConfig();
-    bot.sendMessage(chatId, `✅ ${ticker} timeframes: ${config.pairs[ticker]?.join(', ') || '(semua dihapus, gunakan /remove untuk hapus pair)'}`);
+  function showIntervalPrompt(chatId) {
+    bot.sendMessage(chatId, 'Masukkan interval dalam detik (10–3600):', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '❌ Batal', callback_data: 'config_cancel' }],
+        ]
+      }
+    });
+    conv[chatId] = { cmd: 'config', step: 'interval_input', data: {} };
   }
 
   const cmdList = [
     '/status — cek supertrend semua pair',
-    '/check — cek supertrend pair tertentu',
-    '/add — tambah pair & timeframe',
+    '/managepair — tambah/edit timeframe pair',
     '/remove — hapus pair',
-    '/addtf — tambah timeframe ke pair',
-    '/removetf — hapus timeframe dari pair',
-    '/config — lihat konfigurasi',
+    '/config — lihat & ubah konfigurasi',
   ].join('\n');
 
   bot.onText(/\/start/, (msg) => {
@@ -277,61 +526,96 @@ function init() {
     bot.sendMessage(chatId, lines.join('\n'));
   });
 
-  bot.onText(/\/check/, (msg) => askTicker(msg.chat.id, 'check'));
-  bot.onText(/\/add/, (msg) => askTicker(msg.chat.id, 'add'));
+  bot.onText(/\/managepair/, (msg) => askTicker(msg.chat.id, 'managepair'));
   bot.onText(/\/remove/, (msg) => askTicker(msg.chat.id, 'remove'));
-  bot.onText(/\/addtf/, (msg) => askTicker(msg.chat.id, 'addtf'));
-  bot.onText(/\/removetf/, (msg) => askTicker(msg.chat.id, 'removetf'));
 
-  bot.onText(/\/config/, (msg) => {
-    const chatId = msg.chat.id;
+  function showConfigMenu(chatId) {
     const lines = ['<b>Konfigurasi:</b>'];
     for (const [ticker, tfs] of Object.entries(config.pairs)) {
       lines.push(`  ${ticker}: ${tfs.join(', ')}`);
     }
     lines.push(`\nInterval: ${config.pollIntervalMs / 1000}s`);
     lines.push(`Supertrend: period ${config.supertrendPeriod}, multiplier ${config.supertrendMultiplier}`);
-    bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, lines.join('\n'), {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⚙️ Ubah interval', callback_data: 'config_interval' }],
+          [{ text: '❌ Tutup', callback_data: 'config_close' }],
+        ]
+      }
+    });
+  }
+
+  bot.onText(/\/config/, (msg) => showConfigMenu(msg.chat.id));
+
+  bot.on('callback_query', (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const data = callbackQuery.data;
+    bot.answerCallbackQuery(callbackQuery.id);
+
+    if (data === 'config_interval') {
+      showIntervalPrompt(chatId);
+    } else if (data === 'config_close') {
+      bot.sendMessage(chatId, '❌ Config ditutup.');
+    } else if (data === 'config_cancel') {
+      delete conv[chatId];
+      bot.sendMessage(chatId, '❌ Interval tidak diubah.');
+    }
   });
 
   bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text;
-    if (!text || text.startsWith('/')) return;
+    try {
+      const chatId = msg.chat.id;
+      const text = msg.text;
+      if (!text || text.startsWith('/')) return;
 
-    const session = conv[chatId];
-    if (!session) return;
+      const session = conv[chatId];
+      if (!session) return;
 
-    if (session.step === 'ticker') {
-      const ticker = text.toUpperCase();
-      session.data.ticker = ticker;
+      if (session.cmd === 'config') {
+        if (session.step === 'interval_input') {
+          delete conv[chatId];
+          const secs = parseInt(text, 10);
+          if (isNaN(secs) || secs < 10 || secs > 3600) return bot.sendMessage(chatId, '❌ Interval harus angka 10–3600.');
+          config.pollIntervalMs = secs * 1000;
+          saveConfig();
+          startPolling();
+          bot.sendMessage(chatId, `✅ Interval polling diubah ke ${secs}s`);
+          return showConfigMenu(chatId);
+        }
+      }
 
-      if (session.cmd === 'check') {
+      if (session.step === 'ticker') {
+        const ticker = text.toUpperCase();
+        session.data.ticker = ticker;
+
+        if (session.cmd === 'managepair') {
+          return askTimeframes(chatId);
+        }
+
+        if (session.cmd === 'remove') {
+          delete conv[chatId];
+          return handleRemove(chatId, ticker);
+        }
+      }
+
+      if (session.step === 'timeframes') {
+        const raw = text.trim();
+        const tfs = raw === '.' ? ['1h','4h','1d'] : raw.split(',').map(s => s.trim()).filter(Boolean);
+        const { ticker } = session.data;
         delete conv[chatId];
-        const result = await checkAndSend(ticker);
-        return bot.sendMessage(chatId, result);
+
+        if (!tfs.length) return bot.sendMessage(chatId, '❌ Timeframe tidak boleh kosong.');
+
+        if (session.cmd === 'managepair') {
+          if (raw === '.') await bot.sendMessage(chatId, 'ℹ️ Pakai default: 1h,4h,1d');
+          return handleEditPair(chatId, ticker, tfs);
+        }
       }
-
-      if (session.cmd === 'remove') {
-        delete conv[chatId];
-        return handleRemove(chatId, ticker);
-      }
-
-      if (session.cmd === 'add' || session.cmd === 'addtf' || session.cmd === 'removetf') {
-        return askTimeframes(chatId);
-      }
-    }
-
-    if (session.step === 'timeframes') {
-      const tfs = text.split(',').map(s => s.trim()).filter(Boolean);
-      const { ticker } = session.data;
-      delete conv[chatId];
-
-      if (!tfs.length) return bot.sendMessage(chatId, '❌ Timeframe tidak boleh kosong.');
-
-      if (session.cmd === 'add') return handleAdd(chatId, ticker, tfs);
-      if (session.cmd === 'addtf') return handleAddtf(chatId, ticker, tfs);
-      if (session.cmd === 'removetf') return handleRemovetf(chatId, ticker, tfs);
+    } catch (e) {
+      console.error('Message handler error:', e);
+      bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`);
     }
   });
 

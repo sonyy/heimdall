@@ -5,7 +5,9 @@
   "main": "index.js",
   "dependencies": {
     "axios": "^1.7.0",
+    "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
-    "node-telegram-bot-api": "^0.64.0"
+    "node-telegram-bot-api": "^0.64.0",
+    "technicalindicators": "^3.1.0"
   }
 }
