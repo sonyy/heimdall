@@ -9,7 +9,7 @@ db.pragma('journal_mode = WAL');
 const app = express();
 const PORT = 3030;
 
-app.get('/', (req, res) => {
+function getData() {
   const trades = db.prepare('SELECT * FROM sim_trades ORDER BY opened_at DESC').all();
   const openTrades = trades.filter(t => !t.result);
   const closedTrades = trades.filter(t => t.result);
@@ -18,6 +18,12 @@ app.get('/', (req, res) => {
   const totalLose = closedTrades.filter(t => t.result === 'LOSE').length;
   const totalClosed = totalWin + totalLose;
   const winRate = totalClosed > 0 ? ((totalWin / totalClosed) * 100).toFixed(1) : 0;
+  const totalPnl = closedTrades.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0).toFixed(2);
+
+  const cfg = {};
+  for (const r of db.prepare('SELECT key, value FROM config WHERE key IN (\'slPercent\',\'tp1Percent\',\'tp2Percent\')').all()) {
+    cfg[r.key] = r.value;
+  }
 
   const analysis = db.prepare(`
     SELECT ticker, timeframe,
@@ -35,156 +41,150 @@ app.get('/', (req, res) => {
   `).all();
 
   const bestTicker = db.prepare(`
-    SELECT ticker, ROUND(SUM(pnl), 2) as total_pnl, COUNT(*) as total, SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) as wins
-    FROM sim_trades WHERE result IS NOT NULL GROUP BY ticker ORDER BY total_pnl DESC
+    SELECT ticker, timeframe, ROUND(SUM(pnl), 2) as total_pnl, COUNT(*) as total, SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) as wins
+    FROM sim_trades WHERE result IS NOT NULL GROUP BY ticker, timeframe ORDER BY total_pnl DESC
   `).all();
 
   const worstLose = db.prepare(`
     SELECT ticker, timeframe, pnl, opened_at, closed_at FROM sim_trades
-    WHERE result='LOSE' ORDER BY pnl ASC LIMIT 1
-  `).get();
+    WHERE result='LOSE' ORDER BY pnl ASC LIMIT 3
+  `).all();
 
   const bestWin = db.prepare(`
     SELECT ticker, timeframe, pnl, opened_at, closed_at FROM sim_trades
-    WHERE result='WIN' ORDER BY pnl DESC LIMIT 1
-  `).get();
+    WHERE result='WIN' ORDER BY pnl DESC LIMIT 3
+  `).all();
 
-  const html = `<!DOCTYPE html>
+  const pollIntervalMs = (db.prepare("SELECT value FROM config WHERE key='pollIntervalMs'").get() || {}).value || 30000;
+
+  return { trades, openTrades, closedTrades, totalWin, totalLose, totalClosed, winRate, totalPnl, cfg, analysis, bestTicker, worstLose, bestWin, pollIntervalMs: Number(pollIntervalMs) };
+}
+
+app.get('/api/data', (req, res) => res.json(getData()));
+
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Indikratos - Simulasi Trading</title>
+<title>indikratos — sim v1.0</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
-  h1 { color: #58a6ff; margin-bottom: 8px; }
-  h2 { color: #8b949e; font-size: 16px; margin: 24px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
-  .stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
-  .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 20px; min-width: 120px; }
-  .stat-card .label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat-card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .value.green { color: #3fb950; }
-  .value.red { color: #f85149; }
-  .value.blue { color: #58a6ff; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { background: #161b22; color: #8b949e; text-align: left; padding: 10px 8px; border-bottom: 1px solid #30363d; font-weight: 500; position: sticky; top: 0; }
-  td { padding: 8px; border-bottom: 1px solid #21262d; }
-  tr:hover td { background: #1c2128; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-  .badge-open { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb66; }
-  .badge-win { background: #3fb95022; color: #3fb950; border: 1px solid #3fb95066; }
-  .badge-lose { background: #f8514922; color: #f85149; border: 1px solid #f8514966; }
-  .pct-green { color: #3fb950; }
-  .pct-red { color: #f85149; }
-  .section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
-  table.analysis th { font-size: 12px; }
-  .highlight-row { background: #1f6feb11; }
-  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 12px 0; }
-  .summary-card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
-  .summary-card .title { font-size: 11px; color: #8b949e; }
-  .summary-card .big { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Courier New', 'Consolas', 'Lucida Console', monospace; background: #000; color: #e0e0e0; padding: 12px; font-size: 14px; line-height: 1.4; }
+  h1 { color: #fff; font-size: 16px; text-transform: uppercase; margin-bottom: 4px; }
+  h2 { color: #888; font-size: 13px; margin: 16px 0 8px; border-bottom: 1px solid #333; padding-bottom: 4px; text-transform: uppercase; }
+  .stats { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .stat-card { background: #0a0a0a; border: 1px solid #333; padding: 6px 12px; }
+  .stat-card .label { font-size: 10px; color: #888; text-transform: uppercase; }
+  .stat-card .value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+  .value.green { color: #0f0; } .value.red { color: #f00; } .value.blue { color: #888; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { background: #0a0a0a; color: #888; text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; font-weight: 700; position: sticky; top: 0; }
+  td { padding: 4px 8px; border-bottom: 1px solid #1a1a1a; }
+  tr:hover td { background: #111; }
+  .badge { display: inline-block; padding: 1px 6px; font-size: 10px; font-weight: 700; border: 1px solid #333; }
+  .badge-open { color: #888; border-color: #555; }
+  .badge-win { color: #0f0; border-color: #0f0; }
+  .badge-lose { color: #f00; border-color: #f00; }
+  .pct-green { color: #0f0; } .pct-red { color: #f00; }
+  .section { background: #0a0a0a; border: 1px solid #333; padding: 12px; margin-bottom: 12px; }
+  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin: 8px 0; }
+  .summary-card { background: #0a0a0a; border: 1px solid #333; padding: 8px 12px; }
+  .summary-card .title { font-size: 10px; color: #888; text-transform: uppercase; }
+  .summary-card .big { font-size: 16px; font-weight: 700; margin-top: 2px; }
   .scroll-wrap { overflow-x: auto; }
+  .loading { text-align: center; padding: 40px; color: #888; }
 </style>
 </head>
 <body>
-<h1>Indikratos — Simulasi Trading</h1>
-<p style="color:#8b949e;margin-bottom:16px;">Monitoring ${openTrades.length} open trade(s) · ${totalClosed} closed (${winRate}% win rate)</p>
+<h1>indikratos — simulasi trading</h1>
+<div class="stats" id="stats-bar"></div>
 
-<div class="stats">
-  <div class="stat-card"><div class="label">Open Trades</div><div class="value blue">${openTrades.length}</div></div>
-  <div class="stat-card"><div class="label">Closed Trades</div><div class="value blue">${totalClosed}</div></div>
-  <div class="stat-card"><div class="label">Win</div><div class="value green">${totalWin}</div></div>
-  <div class="stat-card"><div class="label">Lose</div><div class="value red">${totalLose}</div></div>
-  <div class="stat-card"><div class="label">Win Rate</div><div class="value ${winRate >= 50 ? 'green' : 'red'}">${winRate}%</div></div>
-</div>
+<h2># Ringkasan</h2>
+<div class="summary-cards" id="summary-cards"></div>
 
-<h2>📊 Analisis Pair</h2>
-<div class="section scroll-wrap">
-<table class="analysis">
-<thead><tr><th>Ticker</th><th>TF</th><th>Total</th><th>Win</th><th>Lose</th><th>Win Rate</th><th>Rata-rata PnL</th><th>Max Win</th><th>Max Lose</th></tr></thead>
-<tbody>
-${analysis.map(a => `
-<tr>
-  <td><strong>${a.ticker}</strong></td>
-  <td>${a.timeframe}</td>
-  <td>${a.total}</td>
-  <td class="pct-green">${a.wins}</td>
-  <td class="pct-red">${a.loses}</td>
-  <td><strong>${a.win_rate}%</strong></td>
-  <td class="${a.avg_pnl >= 0 ? 'pct-green' : 'pct-red'}">${a.avg_pnl}%</td>
-  <td class="pct-green">${a.max_win_pnl || '-'}%</td>
-  <td class="pct-red">${a.max_lose_pnl || '-'}%</td>
-</tr>`).join('')}
-${analysis.length === 0 ? '<tr><td colspan="9" style="text-align:center;color:#8b949e;">Belum ada trade tertutup</td></tr>' : ''}
-</tbody>
-</table>
-</div>
+<h2># Analisis Pair</h2>
+<div class="section scroll-wrap"><table class="analysis"><thead><tr><th>Ticker</th><th>TF</th><th>Total</th><th>Win</th><th>Lose</th><th>Win Rate</th><th>Rata-rata PnL</th><th>Max Win</th><th>Max Lose</th></tr></thead><tbody id="analysis-body"></tbody></table></div>
 
-<h2>🏆 Ringkasan</h2>
-<div class="summary-cards">
-  <div class="summary-card">
-    <div class="title">Ticker Paling Profit (%)</div>
-    <div class="big" style="color:#3fb950;">${bestTicker.length ? bestTicker[0].ticker + ' (' + bestTicker[0].total_pnl + '%)' : '-'}</div>
-  </div>
-  <div class="summary-card">
-    <div class="title">Win Rate Tertinggi</div>
-    <div class="big" style="color:#58a6ff;">${analysis.length ? analysis[0].ticker + ' ' + analysis[0].timeframe + ' (' + analysis[0].win_rate + '%)' : '-'}</div>
-  </div>
-  <div class="summary-card">
-    <div class="title">Lose Terbesar</div>
-    <div class="big" style="color:#f85149;">${worstLose ? worstLose.ticker + ' ' + worstLose.timeframe + ' (' + worstLose.pnl + '%)' : '-'}</div>
-  </div>
-  <div class="summary-card">
-    <div class="title">Win Terbesar</div>
-    <div class="big" style="color:#3fb950;">${bestWin ? bestWin.ticker + ' ' + bestWin.timeframe + ' (+' + bestWin.pnl + '%)' : '-'}</div>
-  </div>
-</div>
-
-<h2>📋 Riwayat Trading</h2>
-<div class="section scroll-wrap">
-<table>
-<thead><tr>
+<h2># Riwayat Trading</h2>
+<div class="section scroll-wrap"><table><thead><tr>
   <th>#</th><th>Ticker</th><th>TF</th><th>Signal</th><th>Entry</th><th>Close</th><th>PnL</th>
   <th>Peak</th><th>Low</th><th>SL</th><th>TP1</th><th>TP2</th><th>Result</th><th>Opened</th><th>Closed</th>
-</tr></thead>
-<tbody>
-${trades.map(t => {
-  const pnlColor = t.pnl >= 0 ? 'pct-green' : 'pct-red';
-  const peakPctColor = t.peak_pct >= 0 ? 'pct-green' : 'pct-red';
-  const lowPctColor = t.low_pct >= 0 ? 'pct-green' : 'pct-red';
-  const badgeClass = !t.result ? 'badge-open' : t.result === 'WIN' ? 'badge-win' : 'badge-lose';
-  const badgeText = !t.result ? 'OPEN' : t.result;
-  return `<tr>
-    <td>${t.id}</td>
-    <td><strong>${t.ticker}</strong></td>
-    <td>${t.timeframe}</td>
-    <td style="font-size:12px;">${t.entry_signal}</td>
-    <td>$${t.entry_price.toFixed(t.entry_price < 0.01 ? 8 : 2)}</td>
-    <td>${t.close_price ? '$' + t.close_price.toFixed(t.close_price < 0.01 ? 8 : 2) : '-'}</td>
-    <td class="${pnlColor}">${t.pnl !== null ? t.pnl + '%' : '-'}</td>
-    <td class="${peakPctColor}">${t.peak_pct !== null ? t.peak_pct + '%' : '-'}</td>
-    <td class="${lowPctColor}">${t.low_pct !== null ? t.low_pct + '%' : '-'}</td>
-    <td>$${t.sl_price.toFixed(t.sl_price < 0.01 ? 8 : 2)}</td>
-    <td>${t.tp2_hit ? '✅ $' + t.tp2_hit.toFixed(t.tp2_hit < 0.01 ? 8 : 2) : '❌'}</td>
-    <td>${t.tp4_hit ? '✅ $' + t.tp4_hit.toFixed(t.tp4_hit < 0.01 ? 8 : 2) : '❌'}</td>
-    <td><span class="badge ${badgeClass}">${badgeText}</span></td>
-    <td style="font-size:11px;color:#8b949e;">${t.opened_at}</td>
-    <td style="font-size:11px;color:#8b949e;">${t.closed_at || '-'}</td>
-  </tr>`;
-}).join('')}
-${trades.length === 0 ? '<tr><td colspan="15" style="text-align:center;color:#8b949e;">Belum ada trade</td></tr>' : ''}
-</tbody>
-</table>
-</div>
+</tr></thead><tbody id="trades-body"></tbody></table></div>
 
-<p style="text-align:center;color:#8b949e;font-size:12px;margin-top:24px;">Indikratos · Simulasi Trading Bot</p>
+<p style="text-align:center;color:#555;font-size:11px;margin-top:20px;">[indikratos sim v1.0]</p>
+
+<script>
+function fmt(n) { if (n === null || n === undefined) return '-'; const v = parseFloat(n); return v < 0.01 && v > -0.01 ? v.toFixed(8) : v.toFixed(2); }
+function pctCls(v) { return v >= 0 ? 'pct-green' : 'pct-red'; }
+function badgeCls(r) { return !r ? 'badge-open' : r === 'WIN' ? 'badge-win' : 'badge-lose'; }
+
+function render(d) {
+  var sl = d.cfg.slPercent || '-2', tp1 = d.cfg.tp1Percent || '2', tp2 = d.cfg.tp2Percent || '4';
+  document.getElementById('stats-bar').innerHTML = [
+    { label: 'Open / Close', val: d.openTrades.length + ' / ' + d.totalClosed, cls: 'blue' },
+    { label: 'W / L / WR', val: d.totalWin + ' / ' + d.totalLose + ' / ' + d.winRate + '%', cls: d.winRate >= 50 ? 'green' : 'red' },
+    { label: 'Total PnL', val: d.totalPnl + '%', cls: d.totalPnl >= 0 ? 'green' : 'red' },
+    { label: 'SL / TP1 / TP2', val: '<span class="pct-red">' + sl + '%</span> / <span class="pct-green">' + tp1 + '%</span> / <span class="pct-green">' + tp2 + '%</span>', cls: '' },
+  ].map(s => '<div class="stat-card"><div class="label">' + s.label + '</div><div class="value ' + s.cls + '">' + s.val + '</div></div>').join('');
+
+  var analysisHtml = d.analysis.map(a =>
+    '<tr><td><strong>' + a.ticker + '</strong></td><td>' + a.timeframe + '</td><td>' + a.total + '</td>'
+    + '<td class="pct-green">' + a.wins + '</td><td class="pct-red">' + a.loses + '</td>'
+    + '<td><strong>' + a.win_rate + '%</strong></td>'
+    + '<td class="' + pctCls(a.avg_pnl) + '">' + a.avg_pnl + '%</td>'
+    + '<td class="pct-green">' + (a.max_win_pnl || '-') + '%</td>'
+    + '<td class="pct-red">' + (a.max_lose_pnl || '-') + '%</td></tr>'
+  ).join('');
+  if (!d.analysis.length) analysisHtml = '<tr><td colspan="9" style="text-align:center;color:#8b949e;">Belum ada trade tertutup</td></tr>';
+  document.getElementById('analysis-body').innerHTML = analysisHtml;
+
+  function top3(list, fmt) {
+    if (!list || !list.length) return '-';
+    return list.slice(0, 3).map(fmt).join('<br>');
+  }
+  document.getElementById('summary-cards').innerHTML = [
+    { title: 'Profit Paling Besar', val: top3(d.bestTicker, function(t) { return t.ticker + ' ' + t.timeframe + ' <span class=\"pct-green\">' + t.total_pnl + '%</span>'; }), cls: '#0f0' },
+    { title: 'Win Rate Tertinggi', val: top3(d.analysis, function(a) { return a.ticker + ' ' + a.timeframe + ' <span class=\"pct-green\">' + a.win_rate + '%</span>'; }), cls: '#0f0' },
+    { title: 'Lose Terbesar', val: top3(d.worstLose, function(l) { return l.ticker + ' ' + l.timeframe + ' <span class=\"pct-red\">' + l.pnl + '%</span>'; }), cls: '#f00' },
+    { title: 'Win Terbesar', val: top3(d.bestWin, function(w) { return w.ticker + ' ' + w.timeframe + ' <span class=\"pct-green\">+' + w.pnl + '%</span>'; }), cls: '#0f0' },
+  ].map(function(s) {
+    return '<div class="summary-card"><div class="title">' + s.title + '</div><div style="font-size:13px;line-height:1.6;margin-top:4px;color:' + s.cls + '">' + s.val + '</div></div>';
+  }).join('');
+
+  var tradesHtml = d.trades.map(function(t) {
+    return '<tr><td>' + t.id + '</td><td><strong>' + t.ticker + '</strong></td><td>' + t.timeframe + '</td>'
+      + '<td style="font-size:12px;">' + t.entry_signal + '</td>'
+      + '<td>$' + fmt(t.entry_price) + '</td>'
+      + '<td>' + (t.close_price ? '$' + fmt(t.close_price) : '-') + '</td>'
+      + '<td class="' + pctCls(t.pnl) + '">' + (t.pnl !== null ? t.pnl + '%' : '-') + '</td>'
+      + '<td class="' + pctCls(t.peak_pct) + '">' + (t.peak_pct !== null ? t.peak_pct + '%' : '-') + '</td>'
+      + '<td class="' + pctCls(t.low_pct) + '">' + (t.low_pct !== null ? t.low_pct + '%' : '-') + '</td>'
+      + '<td class="pct-red">$' + fmt(t.sl_price) + '</td>'
+      + '<td class="' + (t.tp2_hit ? 'pct-green' : '') + '">' + (t.tp2_hit ? '✅ $' + fmt(t.tp2_hit) : '❌') + '</td>'
+      + '<td class="' + (t.tp4_hit ? 'pct-green' : '') + '">' + (t.tp4_hit ? '✅ $' + fmt(t.tp4_hit) : '❌') + '</td>'
+      + '<td><span class="badge ' + badgeCls(t.result) + '">' + (t.result || 'OPEN') + '</span></td>'
+      + '<td style="font-size:11px;color:#8b949e;">' + t.opened_at + '</td>'
+      + '<td style="font-size:11px;color:#8b949e;">' + (t.closed_at || '-') + '</td></tr>';
+  }).join('');
+  if (!d.trades.length) tradesHtml = '<tr><td colspan="15" style="text-align:center;color:#8b949e;">Belum ada trade</td></tr>';
+  document.getElementById('trades-body').innerHTML = tradesHtml;
+}
+
+var pollTimer;
+function fetchData() {
+  fetch('/api/data').then(function(r) { return r.json(); }).then(function(d) {
+    render(d);
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(fetchData, d.pollIntervalMs || 30000);
+  }).catch(function(e) { console.error(e); });
+}
+
+fetchData();
+</script>
 </body>
-</html>`;
-
-  res.send(html);
+</html>`);
 });
 
 app.listen(PORT, () => console.log(`WebUI sim running on http://localhost:${PORT}`));
