@@ -5,6 +5,9 @@ const { ATR } = require('technicalindicators');
 const Database = require('better-sqlite3');
 const path = require('path');
 
+process.on('uncaughtException', e => console.error('UNCAUGHT:', e.stack || e.message));
+process.on('unhandledRejection', (reason, p) => console.error('UNHANDLED REJECTION:', reason?.stack || reason));
+
 const DB_PATH = path.join(__dirname, 'indikratos.db');
 
 const BINANCE_API = 'https://api.binance.com';
@@ -67,6 +70,39 @@ db.exec(`
     result TEXT,
     opened_at TEXT DEFAULT (datetime('now')),
     closed_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS backtest_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    close_price REAL,
+    pnl REAL,
+    sl_price REAL NOT NULL,
+    tp1_price REAL NOT NULL,
+    tp2_price REAL NOT NULL,
+    tp1_hit REAL,
+    tp2_hit REAL,
+    result TEXT,
+    opened_at TEXT,
+    closed_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS backtest_summary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    total_trades INTEGER DEFAULT 0,
+    win INTEGER DEFAULT 0,
+    lose INTEGER DEFAULT 0,
+    win_rate REAL DEFAULT 0,
+    total_pnl REAL DEFAULT 0,
+    avg_pnl REAL DEFAULT 0,
+    max_win REAL DEFAULT 0,
+    max_lose REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(ticker, timeframe)
   );
 `);
 
@@ -316,38 +352,38 @@ function calcSupertrend(klines, period, multiplier) {
   return { isBullish: direction === 1, wasBullish: prevDirection === 1, price: close[close.length - 1] };
 }
 
-async function fetchBinance(symbol, interval, limit) {
-  const { data } = await axios.get(`${BINANCE_API}/api/v3/klines`, {
-    params: { symbol, interval, limit },
-    timeout: 10000,
-  });
+async function fetchBinance(symbol, interval, limit, endTime) {
+  const params = { symbol, interval, limit };
+  if (endTime) params.endTime = endTime;
+  const { data } = await axios.get(`${BINANCE_API}/api/v3/klines`, { params, timeout: 10000 });
   return data;
 }
 
-async function fetchOkx(symbol, interval, limit) {
+async function fetchOkx(symbol, interval, limit, endTime) {
   const instId = symbol.replace('USDT', '-USDT');
   const bar = interval.replace(/h$/, 'H').replace(/d$/, 'D').replace(/w$/, 'W');
-  const { data } = await axios.get(`${OKX_API}/api/v5/market/candles`, {
-    params: { instId, bar, limit },
-    timeout: 10000,
-  });
+  const params = { instId, bar, limit };
+  if (endTime) params.before = endTime;
+  const { data } = await axios.get(`${OKX_API}/api/v5/market/candles`, { params, timeout: 10000 });
   if (data.code !== '0') throw new Error(`OKX error: ${data.msg}`);
-  return data.data;
+  return data.data.reverse(); // OKX returns newest-first, normalize to oldest-first
 }
 
-async function fetchBitget(symbol, interval, limit) {
+async function fetchBitget(symbol, interval, limit, endTime) {
+  const params = { symbol, granularity: interval, limit };
+  if (endTime) params.endTime = endTime;
   const { data } = await axios.get(`${BITGET_API}/api/v2/market/candles`, {
-    params: { symbol, granularity: interval, limit },
-    timeout: 10000,
+    params, timeout: 10000,
   });
   if (data.code !== '00000') throw new Error(`Bitget error: ${data.msg}`);
   return data.data;
 }
 
-async function fetchMexc(symbol, interval, limit) {
+async function fetchMexc(symbol, interval, limit, endTime) {
+  const params = { symbol, interval, limit };
+  if (endTime) params.endTime = endTime;
   const { data } = await axios.get(`${MEXC_API}/api/v3/klines`, {
-    params: { symbol, interval, limit },
-    timeout: 10000,
+    params, timeout: 10000,
   });
   return data;
 }
@@ -356,17 +392,12 @@ async function fetchKlines(symbol, interval, limit = 200) {
   const errors = [];
   try { const d = await fetchBinance(symbol, interval, limit); return { exchange: 'Binance', data: d }; }
   catch (e) { errors.push(`Binance: ${e.message}`); }
-
   try { const d = await fetchOkx(symbol, interval, limit); return { exchange: 'OKX', data: d }; }
   catch (e) { errors.push(`OKX: ${e.message}`); }
-
   try { const d = await fetchMexc(symbol, interval, limit); return { exchange: 'MEXC', data: d }; }
   catch (e) { errors.push(`MEXC: ${e.message}`); }
-
   try { const d = await fetchBitget(symbol, interval, limit); return { exchange: 'Bitget', data: d }; }
   catch (e) { errors.push(`Bitget: ${e.message}`); }
-
-  // Retry with USDT suffix if original symbol doesn't end with USDT
   if (!symbol.endsWith('USDT')) {
     const usdtSymbol = symbol + 'USDT';
     const usdtErrors = [];
@@ -380,8 +411,34 @@ async function fetchKlines(symbol, interval, limit = 200) {
     catch (e) { usdtErrors.push(`Bitget: ${e.message}`); }
     errors.push(`with USDT: ${usdtErrors.join('; ')}`);
   }
-
   throw new Error(`All candle sources failed: ${errors.join('; ')}`);
+}
+
+async function fetchKlinesRange(symbol, interval, totalLimit) {
+  const batchSize = 1000;
+  let allData = [];
+  let endTime = null;
+  const errors = [];
+  const tryFetch = async (sym, iv, lim, et) => {
+    let lastErr;
+    for (const fn of [fetchBinance, fetchOkx, fetchMexc, fetchBitget]) {
+      try {
+        const d = await fn(sym, iv, lim, et);
+        if (d && d.length) return d;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('No data');
+  };
+  while (allData.length < totalLimit) {
+    const lim = Math.min(batchSize, totalLimit - allData.length);
+    const data = await tryFetch(symbol, interval, lim, endTime);
+    if (!data || !data.length) break;
+    if (allData.length && data[0][0] >= allData[0][0]) break; // stop if no older data
+    allData = [...data, ...allData];
+    endTime = data[0][0] - 1;
+    if (data.length < lim) break;
+  }
+  return { exchange: 'paginated', data: allData };
 }
 
 async function checkPair(ticker, timeframes) {
@@ -396,11 +453,16 @@ async function checkPair(ticker, timeframes) {
   return results;
 }
 
-function formatNotification(ticker, price, results) {
+function formatNotification(ticker, price, results, prevState) {
   const exchange = Object.values(results)[0]?.exchange || '';
   const priceStr = price < 0.01 ? price.toFixed(8) : price.toFixed(2);
-  const parts = [ticker, ...Object.entries(results).map(([tf, r]) => `${tf}${r.isBullish ? '🟢' : '🔴'}`), `$${priceStr}`, exchange].filter(Boolean);
-  return parts.join(' ');
+  const signals = Object.entries(results).map(([tf, r]) => {
+    const key = `${ticker}_${tf}`;
+    const changed = prevState && prevState[key] !== undefined && prevState[key] !== r.isBullish;
+    return `${r.isBullish ? '🟢' : '🔴'} ${tf}${changed ? (r.isBullish ? ' BREAKOUT' : ' BREAKDOWN') : ''}`;
+  });
+  const parts = [`<b>${ticker}</b>`, `$${priceStr} [${exchange}]`, ...signals];
+  return parts.join('\n');
 }
 
 async function fetchCurrentPrice(ticker) {
@@ -426,6 +488,108 @@ function closeSimTrade(id, closePrice, result) {
   const pnl = ((closePrice - db.prepare('SELECT entry_price FROM sim_trades WHERE id=?').get(id).entry_price) / db.prepare('SELECT entry_price FROM sim_trades WHERE id=?').get(id).entry_price) * 100;
   db.prepare(`UPDATE sim_trades SET close_price=?, pnl=?, result=?, closed_at=datetime('now') WHERE id=?`).run(closePrice, pnl.toFixed(2), result, id);
   console.log(`SIM TRADE CLOSE #${id}: ${result} @ $${closePrice} (${pnl.toFixed(2)}%)`);
+}
+
+async function runBacktest(targetTicker, targetTf) {
+  const results = [];
+
+  const insTrade = db.prepare(`INSERT INTO backtest_trades (ticker,timeframe,entry_price,close_price,pnl,sl_price,tp1_price,tp2_price,tp1_hit,tp2_hit,result,opened_at,closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const upsertSummary = db.prepare(`INSERT OR REPLACE INTO backtest_summary (ticker,timeframe,total_trades,win,lose,win_rate,total_pnl,avg_pnl,max_win,max_lose) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+
+  const pairs = targetTicker
+    ? { [targetTicker]: targetTf ? [targetTf] : (config.pairs[targetTicker] || []) }
+    : config.pairs;
+
+  const tasks = [];
+  for (const [ticker, timeframes] of Object.entries(pairs)) {
+    for (const tf of timeframes) {
+      tasks.push({ ticker, tf });
+    }
+  }
+
+  const processOne = async ({ ticker, tf }) => {
+    try {
+      const result = await fetchKlinesRange(ticker, tf, 10000);
+      const data = result.data;
+      if (!data || !data.length) throw new Error('No data');
+
+      const closes = data.map(k => parseFloat(k[4]));
+      const period = config.supertrendPeriod;
+
+      let trades = [], openTrade = null;
+      let prevBullish = null;
+
+      for (let i = period; i < closes.length; i++) {
+        const slice = data.slice(0, i + 1);
+        const st = calcSupertrend(slice, period, config.supertrendMultiplier);
+        if (!st) continue;
+        const price = closes[i];
+        let ts;
+        try { ts = new Date(data[i][0]).toISOString().replace('T', ' ').slice(0, 19); } catch (e) { ts = 'unknown'; }
+
+        if (i === period) { prevBullish = st.isBullish; continue; }
+
+        if (!openTrade && prevBullish === false && st.isBullish === true) {
+          const sl = price * (1 + config.slPercent / 100);
+          const tp1 = price * (1 + config.tp1Percent / 100);
+          const tp2 = price * (1 + config.tp2Percent / 100);
+          openTrade = { entry: price, sl, tp1, tp2, tp1Hit: false, tp2Hit: false, openAt: ts };
+        }
+
+        if (openTrade) {
+          const pnl = ((price - openTrade.entry) / openTrade.entry) * 100;
+          if (price <= openTrade.sl) {
+            insTrade.run(ticker, tf, openTrade.entry, price, pnl.toFixed(2), openTrade.sl, openTrade.tp1, openTrade.tp2, openTrade.tp1Hit ? openTrade.tp1 : null, null, 'LOSE', openTrade.openAt, ts);
+            trades.push({ pnl, result: 'LOSE' });
+            openTrade = null;
+          } else if (price >= openTrade.tp2) {
+            if (!openTrade.tp1Hit && price >= openTrade.tp1) openTrade.tp1Hit = openTrade.tp1;
+            if (!openTrade.tp2Hit) openTrade.tp2Hit = openTrade.tp2;
+            insTrade.run(ticker, tf, openTrade.entry, price, pnl.toFixed(2), openTrade.sl, openTrade.tp1, openTrade.tp2, openTrade.tp1Hit || null, openTrade.tp2, 'WIN', openTrade.openAt, ts);
+            trades.push({ pnl, result: 'WIN' });
+            openTrade = null;
+          } else if (price >= openTrade.tp1 && !openTrade.tp1Hit) {
+            openTrade.tp1Hit = openTrade.tp1;
+          }
+        }
+        prevBullish = st.isBullish;
+      }
+
+      if (openTrade) {
+        const lastPrice = closes[closes.length - 1];
+        const pnl = ((lastPrice - openTrade.entry) / openTrade.entry) * 100;
+        let lastTs;
+        try { lastTs = new Date(data[data.length-1][0]).toISOString().replace('T', ' ').slice(0, 19); } catch (e) { lastTs = 'unknown'; }
+        insTrade.run(ticker, tf, openTrade.entry, lastPrice, pnl.toFixed(2), openTrade.sl, openTrade.tp1, openTrade.tp2, openTrade.tp1Hit ? openTrade.tp1 : null, null, openTrade.tp2Hit ? 'WIN' : 'LOSE', openTrade.openAt, lastTs);
+        trades.push({ pnl, result: openTrade.tp2Hit ? 'WIN' : 'LOSE' });
+      }
+
+      if (trades.length) {
+        const win = trades.filter(t => t.result === 'WIN').length;
+        const lose = trades.filter(t => t.result === 'LOSE').length;
+        const total = win + lose;
+        const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+        const avgPnl = totalPnl / total;
+        const maxWin = Math.max(...trades.filter(t => t.result === 'WIN').map(t => t.pnl), 0);
+        const maxLose = Math.min(...trades.filter(t => t.result === 'LOSE').map(t => t.pnl), 0);
+        const winRate = (win / total) * 100;
+        upsertSummary.run(ticker, tf, total, win, lose, winRate.toFixed(1), totalPnl.toFixed(2), avgPnl.toFixed(2), maxWin.toFixed(2), maxLose.toFixed(2));
+        return `${ticker} ${tf}: ${total} trade (${win}W/${lose}L) ${winRate.toFixed(0)}% WR, total ${totalPnl.toFixed(2)}%`;
+      }
+      return null;
+    } catch (e) {
+      console.error(`Backtest error ${ticker} ${tf}:`, e.stack || e.message);
+      return `⚠️ ${ticker} ${tf}: ${e.message}`;
+    }
+  };
+
+  // Process in parallel batches of 5 to avoid rate limits
+  for (let i = 0; i < tasks.length; i += 5) {
+    const batch = tasks.slice(i, i + 5);
+    const res = await Promise.all(batch.map(processOne));
+    results.push(...res.filter(Boolean));
+  }
+  return results;
 }
 
 async function processSimTrades(currentPrices) {
@@ -497,6 +661,7 @@ async function poll() {
 
         let hasChange = false;
         let hasNew = false;
+        const stateBefore = { ...state };
         for (const [tf, r] of Object.entries(results)) {
           const key = `${ticker}_${tf}`;
           const prev = state[key];
@@ -516,7 +681,7 @@ async function poll() {
 
         if (hasChange || hasNew) {
           const price = currentPrices[ticker];
-          changedPairs.push(formatNotification(ticker, price, results));
+          changedPairs.push(formatNotification(ticker, price, results, stateBefore));
         }
       } catch (e) {
         console.error(`Error checking ${ticker}:`, e.message);
@@ -588,7 +753,9 @@ function init() {
 
   function askTimeframes(chatId) {
     conv[chatId].step = 'timeframes';
-    bot.sendMessage(chatId, 'Masukkan timeframe (pisahkan dengan koma):\n\n'
+    const ticker = conv[chatId]?.data?.ticker;
+    const current = ticker && config.pairs[ticker] ? `\n<b>Saat ini:</b> ${ticker}: ${config.pairs[ticker].join(', ')}` : '';
+    bot.sendMessage(chatId, 'Masukkan timeframe (pisahkan dengan koma):' + current + '\n\n'
       + '<b>Menit:</b> 1m, 3m, 5m, 15m, 30m\n'
       + '<b>Jam:</b> 1h, 2h, 4h, 6h, 8h, 12h\n'
       + '<b>Hari:</b> 1d, 3d\n'
@@ -640,6 +807,8 @@ function init() {
     '/managepair — tambah/edit timeframe pair',
     '/remove — hapus pair',
     '/config — lihat & ubah konfigurasi',
+    '/backtest — backtest semua pair',
+    '/backtest TICKER TF — backtest pair tertentu (opsional TF)',
   ].join('\n');
 
   bot.onText(/\/start/, (msg) => {
@@ -652,7 +821,34 @@ function init() {
     for (const [ticker] of Object.entries(config.pairs)) {
       lines.push(await checkAndSend(ticker));
     }
-    bot.sendMessage(chatId, lines.join('\n'));
+    bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+  });
+
+  bot.onText(/\/backtest(?:\s+(\w+)(?:\s+(\w+))?)?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const ticker = match[1] ? match[1].toUpperCase() : null;
+    const tf = match[2] ? match[2].toLowerCase() : null;
+    if (ticker && !config.pairs[ticker]) {
+      return bot.sendMessage(chatId, `❌ ${ticker} tidak ada di monitoring.`);
+    }
+    if (ticker && tf && !config.pairs[ticker].includes(tf)) {
+      return bot.sendMessage(chatId, `❌ ${ticker} tidak punya timeframe ${tf}.`);
+    }
+    const label = ticker ? (tf ? `${ticker} ${tf}` : ticker) : 'semua pair';
+    await bot.sendMessage(chatId, `⏳ Backtest ${label}...`);
+    if (!ticker) {
+      db.prepare('DELETE FROM backtest_trades').run();
+      db.prepare('DELETE FROM backtest_summary').run();
+    } else if (!tf) {
+      db.prepare('DELETE FROM backtest_trades WHERE ticker=?').run(ticker);
+      db.prepare('DELETE FROM backtest_summary WHERE ticker=?').run(ticker);
+    } else {
+      db.prepare('DELETE FROM backtest_trades WHERE ticker=? AND timeframe=?').run(ticker, tf);
+      db.prepare('DELETE FROM backtest_summary WHERE ticker=? AND timeframe=?').run(ticker, tf);
+    }
+    const res = await runBacktest(ticker, tf);
+    const msgText = ['<b>Backtest selesai</b>', ...res].join('\n');
+    bot.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
   });
 
   bot.onText(/\/managepair/, (msg) => askTicker(msg.chat.id, 'managepair'));
@@ -762,14 +958,14 @@ function init() {
 
       if (session.step === 'timeframes') {
         const raw = text.trim();
-        const tfs = raw === '.' ? ['1h','4h','1d'] : raw.split(',').map(s => s.trim()).filter(Boolean);
+        const tfs = raw === '.' ? ['15m','1h','4h','1d'] : raw.split(',').map(s => s.trim()).filter(Boolean);
         const { ticker } = session.data;
         delete conv[chatId];
 
         if (!tfs.length) return bot.sendMessage(chatId, '❌ Timeframe tidak boleh kosong.');
 
         if (session.cmd === 'managepair') {
-          if (raw === '.') await bot.sendMessage(chatId, 'ℹ️ Pakai default: 1h,4h,1d');
+          if (raw === '.') await bot.sendMessage(chatId, 'ℹ️ Pakai default: 15m,1h,4h,1d');
           return handleEditPair(chatId, ticker, tfs);
         }
       }
