@@ -53,11 +53,9 @@ app.get('/', (req, res) => {
 <body>
 <div style="max-width:1100px;margin:0 auto">
 
-<h1>╔═ INDIKRATOS ═══════╗</h1>
+<h1>INDIKRATOS</h1>
 <div class="status-bar">
-  <span>⏱ <span id="timer">0</span>s</span>
-  <span>⟳ <span id="nextPoll">0</span>s</span>
-  <span style="float:right">$(date '+%Y-%m-%d %H:%M:%S')</span>
+  <span id="datetime"></span>
 </div>
 
 <div class="tab-container">
@@ -98,16 +96,15 @@ app.get('/', (req, res) => {
     });
   });
 
-  let seconds = 0, nextPoll = 3;
-  const timerEl = document.getElementById('timer');
-  const pollEl = document.getElementById('nextPoll');
-  setInterval(() => {
-    seconds++;
-    nextPoll--;
-    if (nextPoll <= 0) nextPoll = 3;
-    if (timerEl) timerEl.textContent = seconds;
-    if (pollEl) pollEl.textContent = nextPoll;
-  }, 1000);
+  function updateDateTime() {
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    document.getElementById('datetime').textContent =
+      now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate()) + ' ' +
+      pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+  }
+  updateDateTime();
+  setInterval(updateDateTime, 1000);
 
   setInterval(() => {
     const active = document.querySelector('.tab.active');
@@ -117,7 +114,6 @@ app.get('/', (req, res) => {
       .then(html => {
         const panel = document.getElementById('panel-' + name);
         if (panel) panel.innerHTML = html;
-        seconds = 0;
       })
       .catch(() => {});
   }, 3000);
