@@ -1,6 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { db, upsertConfig, getConfig, getFeatConfig, loadPairsFor } = require('./lib/db');
+const { normalizeTf } = require('./lib/exchange');
 const stSim = require('./lib/st-simulasi');
 const btSt = require('./lib/backtest-st');
 const perpMs = require('./lib/perpetual-ms');
@@ -10,9 +11,9 @@ const CHAT_ID = process.env.CHAT_ID || '5444480485';
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ─── Register feature modules ────────────────────────────────────────────────
-const st = stSim.register(bot);
-const bt = btSt.register(bot);
-const perp = perpMs.register(bot);
+const st = stSim.register(bot, CHAT_ID);
+const bt = btSt.register(bot, CHAT_ID);
+const perp = perpMs.register(bot, CHAT_ID);
 
 const features = [st, bt, perp];
 
@@ -38,7 +39,9 @@ function showMainMenu(chatId, msgId) {
     `━━━ <b>INDIKRATOS</b> ━━━\n\n` +
     `📈 ST Sim: ${Object.keys(stPairs).length} pairs ${stRunning ? '✅' : '❌'}\n` +
     `📊 BT: ${Object.keys(btPairs).length} pairs (${btCount} hasil)\n` +
-    `🔁 Perp: ${Object.keys(perpPairs).length} pairs ${perpRunning ? '✅' : '❌'}`,
+    `🔁 Perp: ${Object.keys(perpPairs).length} pairs ${perpRunning ? '✅' : '❌'}\n\n` +
+    `TF: <code>1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M</code>` +
+    `\n<code>1M</code> = monthly (bukan 1 minute)`,
     {
       parse_mode: 'HTML',
       reply_markup: {
@@ -58,7 +61,7 @@ bot.onText(/\/start|\/menu|\/config/, (msg) => showMainMenu(msg.chat.id));
 bot.onText(/\/backtest(?:\s+(\w+)(?:\s+(\w+))?)?/, async (msg, match) => {
   const chatId = msg.chat.id;
   const ticker = match[1] ? match[1].toUpperCase() : null;
-  const tf = match[2] ? match[2].toLowerCase() : null;
+  const tf = match[2] ? normalizeTf(match[2]) : null;
   if (!btSt.runBacktest) return bot.sendMessage(chatId, '\u274c Backtest module unavailable');
   try {
     const m = await bot.sendMessage(chatId, `\u23f3 Running backtest ${ticker || 'semua pair'}${tf ? ' ' + tf : ''}...`);
