@@ -6,57 +6,85 @@ const stSim = require('./lib/st-simulasi');
 const btSt = require('./lib/backtest-st');
 const perpMs = require('./lib/perpetual-ms');
 
+// ─── Process-level safety nets (prevent silent exits) ─────────────────────
+process.on('uncaughtException', (e) => {
+  console.error('UNCAUGHT:', e.message, e.stack?.split('\n').slice(0,3).join(' | '));
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED:', reason?.message || reason);
+});
+
 const BOT_TOKEN = process.env.BOT_TOKEN || '8867777426:AAHqm3HohKGrNFYSU94sP5ssHh0LizQGjaA';
 const CHAT_ID = process.env.CHAT_ID || 'CHAT_ID';
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+
+// Clear any stale webhook/polling state so fresh polling starts clean
+bot.deleteWebHook().catch(() => {});
 
 // ─── Register feature modules ────────────────────────────────────────────────
 const st = stSim.register(bot, CHAT_ID);
 const bt = btSt.register(bot, CHAT_ID);
 const perp = perpMs.register(bot, CHAT_ID);
-
 const features = [st, bt, perp];
 
 // ─── Shared sendMenu ─────────────────────────────────────────────────────────
 async function sendMenu(chatId, msgId, text, opts) {
   if (msgId) {
-    try { return await bot.editMessageText(text, { chat_id: chatId, message_id: msgId, ...opts }); } catch (e) {}
+    try { return await bot.editMessageText(text, { chat_id: chatId, message_id: msgId, ...opts }); } catch (e) { console.error('sendMenu edit err:', e.message); }
   } else {
-    try { return await bot.sendMessage(chatId, text, opts); } catch (e) {}
+    try { return await bot.sendMessage(chatId, text, opts); } catch (e) { console.error('sendMenu send err:', e.message); }
   }
 }
 
 // ─── Main Menu ───────────────────────────────────────────────────────────────
 function showMainMenu(chatId, msgId) {
-  const stPairs = loadPairsFor('st_pairs');
-  const btPairs = loadPairsFor('bt_pairs');
-  const perpPairs = loadPairsFor('perp_pairs');
-  const stRunning = getFeatConfig('st', 'running', '1') === '1';
-  const perpRunning = getFeatConfig('perp', 'running', '0') === '1';
-  const btCount = db.prepare("SELECT COUNT(*) as c FROM backtest_summary").get().c;
+  try {
+    const stPairs = loadPairsFor('st_pairs');
+    const btPairs = loadPairsFor('bt_pairs');
+    const perpPairs = loadPairsFor('perp_pairs');
+    const stRunning = getFeatConfig('st', 'running', '1') === '1';
+    const perpRunning = getFeatConfig('perp', 'running', '0') === '1';
+    const btCount = db.prepare("SELECT COUNT(*) as c FROM backtest_summary").get().c;
 
-  sendMenu(chatId, msgId,
-    `━━━ <b>INDIKRATOS</b> ━━━\n\n` +
-    `📈 ST Sim: ${Object.keys(stPairs).length} pairs ${stRunning ? '✅' : '❌'}\n` +
-    `📊 BT: ${Object.keys(btPairs).length} pairs (${btCount} hasil)\n` +
-    `🔁 Perp: ${Object.keys(perpPairs).length} pairs ${perpRunning ? '✅' : '❌'}\n\n` +
-    `TF: <code>1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M</code>` +
-    `\n<code>1M</code> = monthly (bukan 1 minute)`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: `\u{1F4C8} ST Simulasi ${stRunning ? '✅' : '❌'}`, callback_data: 'main_st' }],
-          [{ text: `\u{1F4CA} Backtest ST`, callback_data: 'main_bt' }],
-          [{ text: `\u{1F501} Perpetual MS ${perpRunning ? '✅' : '❌'}`, callback_data: 'main_perp' }],
-        ]
+    sendMenu(chatId, msgId,
+      `━━━ <b>INDIKRATOS</b> ━━━\n\n` +
+      `📈 ST Sim: ${Object.keys(stPairs).length} pairs ${stRunning ? '✅' : '❌'}\n` +
+      `📊 BT: ${Object.keys(btPairs).length} pairs (${btCount} hasil)\n` +
+      `🔁 Perp: ${Object.keys(perpPairs).length} pairs ${perpRunning ? '✅' : '❌'}\n\n` +
+      `TF: <code>1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M</code>` +
+      `\n<code>1M</code> = monthly (bukan 1 minute)`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `\u{1F4C8} ST Simulasi ${stRunning ? '✅' : '❌'}`, callback_data: 'main_st' }],
+            [{ text: `\u{1F4CA} Backtest ST`, callback_data: 'main_bt' }],
+            [{ text: `\u{1F501} Perpetual MS ${perpRunning ? '✅' : '❌'}`, callback_data: 'main_perp' }],
+          ]
+        }
       }
-    }
-  );
+    );
+  } catch (e) {
+    console.error('showMainMenu error:', e.message);
+  }
 }
 
+// ─── Register command list for Telegram UI ──────────────────────────────────
+bot.setMyCommands([
+  { command: 'menu', description: 'Menu utama' },
+  { command: 'status', description: 'System status' },
+  { command: 'backtest', description: 'Backtest ST' },
+  { command: 'btp', description: 'Backtest perpetual' },
+]).catch(() => {});
+
+// ─── Notify user on restart ─────────────────────────────────────────────────
+bot.sendMessage(CHAT_ID, '🔄 Indikratos restarted', { disable_notification: true }).catch(() => {});
+
 // ─── Command Handlers ────────────────────────────────────────────────────────
-bot.onText(/\/start|\/menu|\/config/, (msg) => showMainMenu(msg.chat.id));
+bot.onText(/\/start|\/menu|\/config/, (msg) => {
+  console.log('CMD /menu from', msg.chat.id, msg.chat.type, 'text:', msg.text);
+  showMainMenu(msg.chat.id);
+});
 
 bot.onText(/\/backtest(?:\s+(\w+)(?:\s+(\w+))?)?/, async (msg, match) => {
   const chatId = msg.chat.id;
@@ -150,6 +178,13 @@ async function poll() {
   }
   setTimeout(poll, interval);
 }
+
+// ─── Polling error visibility ─────────────────────────────────────────────
+bot.on('polling_error', (e) => console.error('POLLING ERROR:', e.message));
+
+// ─── Keep event loop alive ────────────────────────────────────────────────
+// heartbeat ensures process never exits when TelegramBot polling idles
+setInterval(() => {}, 30000);
 
 setTimeout(poll, 5000);
 
