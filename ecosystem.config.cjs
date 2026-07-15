@@ -1,8 +1,8 @@
 module.exports = {
   apps: [{
-    name: 'indikratos',
+    name: 'heimdall',
     script: 'index.js',
-    cwd: '/home/ubuntu/indikratos',
+    cwd: '/home/ubuntu/heimdall',
     env: {
       NODE_OPTIONS: '--max-old-space-size=192',
     },
@@ -12,15 +12,15 @@ module.exports = {
     max_memory_restart: '180M',
     watch: false,
     log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-    out_file: '/home/ubuntu/indikratos/logs/out.log',
-    error_file: '/home/ubuntu/indikratos/logs/err.log',
+    out_file: '/home/ubuntu/heimdall/logs/out.log',
+    error_file: '/home/ubuntu/heimdall/logs/err.log',
     merge_logs: true,
     kill_timeout: 5000,
   },
   {
-    name: 'indikratos-webui',
+    name: 'heimdall-webui',
     script: 'webui-sim.js',
-    cwd: '/home/ubuntu/indikratos',
+    cwd: '/home/ubuntu/heimdall',
     env: {
       NODE_OPTIONS: '--max-old-space-size=192',
     },
