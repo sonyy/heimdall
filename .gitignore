@@ -2,6 +2,7 @@ node_modules/
 .env
 state.json
 config.json
-indikratos.db
-indikratos.db-shm
-indikratos.db-wal
+heimdall.db
+heimdall.db-shm
+heimdall.db-wal
+logs/

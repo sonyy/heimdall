@@ -1,5 +1,5 @@
 {
-  "name": "indikratos",
+  "name": "heimdall",
   "version": "1.0.0",
   "description": "Telegram bot for supertrend breakout/breakdown alerts",
   "main": "index.js",
@@ -8,7 +8,7 @@
     "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "node-telegram-bot-api": "^0.64.0",
+    "node-telegram-bot-api": "^1.1.2",
     "pm2": "^7.0.1",
     "technicalindicators": "^3.1.0"
   }

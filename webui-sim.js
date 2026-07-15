@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Indikratos — Terminal</title>
+<title>Heimdall — Terminal</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #0a0a0a; color: #00ff00; font-family: 'Courier New', monospace; padding: 12px 16px 60px; font-size: 13px; line-height: 1.5; }
@@ -53,7 +53,7 @@ app.get('/', (req, res) => {
 <body>
 <div style="max-width:1100px;margin:0 auto">
 
-<h1>INDIKRATOS</h1>
+<h1>HEIMDALL</h1>
 <div class="status-bar">
   <span id="datetime"></span>
 </div>
@@ -78,7 +78,7 @@ app.get('/', (req, res) => {
     backtest: document.getElementById('panel-backtest'),
     perpetual: document.getElementById('panel-perpetual'),
   };
-  const saved = localStorage.getItem('indikratos_tab');
+  const saved = localStorage.getItem('heimdall_tab');
   if (saved && panels[saved]) {
     tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === saved));
     Object.values(panels).forEach(p => p.classList.remove('active'));
@@ -92,7 +92,7 @@ app.get('/', (req, res) => {
       tab.classList.add('active');
       Object.values(panels).forEach(p => p.classList.remove('active'));
       if (panels[name]) panels[name].classList.add('active');
-      localStorage.setItem('indikratos_tab', name);
+      localStorage.setItem('heimdall_tab', name);
     });
   });
 
