@@ -34,6 +34,13 @@ node index.js  # Starts polling + bot
 node webui-sim.js  # Simulation UI
 ```
 
+## Commands
+
+- `/status` - Check positions and status
+- `/signals` - View recent signals
+- `/backtest` - Run backtest on pairs
+- `/start` - Start monitoring
+
 ## Configuration
 
 Edit `config.json`:
@@ -48,17 +55,10 @@ Edit `config.json`:
 }
 ```
 
-## Storage
+### Storage
 
 - `state.json`: Application state
 - `heimdall.db`: SQLite database for market data
-
-## Commands
-
-- `/status` - Check positions and status
-- `/signals` - View recent signals
-- `/backtest` - Run backtest on pairs
-- `/start` - Start monitoring
 
 ## Development
 
