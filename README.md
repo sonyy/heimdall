@@ -2,7 +2,7 @@
 
 Telegram bot for Supertrend breakout/breakdown alerts with simulated trading and backtesting.
 
-## Quick Overview
+## What It Does
 
 - **Real-time alerts**: Supertrend (ST) breakout/breakdown detection
 - **Simulation mode**: Dry-run trading with ST signals
