@@ -29,3 +29,16 @@ Gunakan multiple worker secara paralel dalam mengerjakan task yang diberikan ke 
    - Mempertimbangkan dampak ke pair/timeframe lain
    - Memastikan perubahan tidak menghalangi pola profitable yang sudah ter-identifikasi
 4. **When unsure, say "saya perlu liat data dulu" before proposing anything.**
+
+## ⚡ Live vs Dry-Run parity (HARD RULE)
+
+- **Pastikan mode live dan dry-run SELALU SAMA.** Setiap perubahan logika,
+  parameter, atau flow yang dibuat saat simulasi/dry-run HARUS juga diterapkan
+  ke mode live — dan sebaliknya. Kedua mode tidak boleh divergen dalam
+  pengambilan keputusan.
+- Dry-run/simulasi hanya me-skip eksekusi aktual (kirim tx / tulis DB mutasi).
+  Ia TIDAK boleh me-skip screening, perhitungan (ST/backtest/perp), safety
+  check, atau logging apa pun yang juga dijalankan live.
+- Sebelum menyelesaikan perubahan, pastikan path simulasi vs live pada kode
+  yang disentuh menghasilkan keputusan yang sama. Jangan biarkan fix menetap di
+  dry-run saja tanpa juga masuk ke live.
