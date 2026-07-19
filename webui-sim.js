@@ -1,7 +1,6 @@
 const express = require('express');
 const renderStSimulasi = require('./lib/webui-st-simulasi');
 const renderBacktestSt = require('./lib/webui-backtest-st');
-const renderPerpetualMs = require('./lib/webui-perpetual-ms');
 
 const app = express();
 const PORT = 3030;
@@ -9,7 +8,6 @@ const PORT = 3030;
 app.get('/', (req, res) => {
   const stHtml = renderStSimulasi();
   const btHtml = renderBacktestSt();
-  const perpHtml = renderPerpetualMs();
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -59,14 +57,12 @@ app.get('/', (req, res) => {
 </div>
 
 <div class="tab-container">
-  <span class="tab active" data-tab="simulator">📈 Simulator</span>
+  <span class="tab active" data-tab="simulator">📈 Indikator Supertrend</span>
   <span class="tab" data-tab="backtest">📊 Backtest</span>
-  <span class="tab" data-tab="perpetual">🔁 Perpetual MS</span>
 </div>
 
 <div class="panel active" id="panel-simulator">${stHtml}</div>
 <div class="panel" id="panel-backtest">${btHtml}</div>
-<div class="panel" id="panel-perpetual">${perpHtml}</div>
 
 </div>
 
@@ -76,7 +72,6 @@ app.get('/', (req, res) => {
   const panels = {
     simulator: document.getElementById('panel-simulator'),
     backtest: document.getElementById('panel-backtest'),
-    perpetual: document.getElementById('panel-perpetual'),
   };
   const saved = localStorage.getItem('heimdall_tab');
   if (saved && panels[saved]) {
@@ -127,7 +122,6 @@ app.get('/refresh/:tab', (req, res) => {
   const tab = req.params.tab;
   if (tab === 'simulator') return res.send(renderStSimulasi());
   if (tab === 'backtest') return res.send(renderBacktestSt());
-  if (tab === 'perpetual') return res.send(renderPerpetualMs());
   res.status(404).send('Not found');
 });
 
