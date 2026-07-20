@@ -104,11 +104,16 @@ app.get('/', (req, res) => {
   setInterval(() => {
     const active = document.querySelector('.tab.active');
     const name = active ? active.dataset.tab : 'simulator';
+    const panel = document.getElementById('panel-' + name);
+    if (!panel) return;
+    const scrolls = [];
+    panel.querySelectorAll('.table-wrap').forEach(el => scrolls.push(el.scrollLeft));
     fetch('/refresh/' + name)
       .then(r => r.text())
       .then(html => {
-        const panel = document.getElementById('panel-' + name);
-        if (panel) panel.innerHTML = html;
+        panel.innerHTML = html;
+        const wraps = panel.querySelectorAll('.table-wrap');
+        wraps.forEach((el, i) => { if (scrolls[i]) el.scrollLeft = scrolls[i]; });
       })
       .catch(() => {});
   }, 3000);
