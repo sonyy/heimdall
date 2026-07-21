@@ -48,7 +48,7 @@ async function sendMenu(chatId, msgId, text, opts) {
 // ─── Register command list for Telegram UI ──────────────────────────────────
 bot.setMyCommands([
   { command: 'notif', description: 'Notifikasi Supertrend' },
-  { command: 'backtest', description: 'Backtest Supertrend' },
+  { command: 'backtest', description: 'Backtest' },
 ]).catch(() => {});
 
 // ─── Notify user on restart ─────────────────────────────────────────────────

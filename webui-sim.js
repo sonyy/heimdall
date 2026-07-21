@@ -49,7 +49,7 @@ app.get('/', (req, res) => {
 </style>
 </head>
 <body>
-<div style="max-width:1100px;margin:0 auto">
+<div style="max-width:1600px;margin:0 auto">
 
 <h1>HEIMDALL</h1>
 <div class="status-bar">
