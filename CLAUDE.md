@@ -11,7 +11,14 @@ Telegram trading-signal bot (Node.js) untuk simulasi Supertrend (ST), backtest, 
 - State: `state.json`, `heimdall.db` (SQLite).
 
 ## ⚡ Communication Rules
-- High-level only; jawab yang ditanya; bahasa manusia; singkat & padat.
+
+- **High-level only** — skip implementation details unless asked
+- **Bahasa manusia** — jangan pakai technical jargon yang tidak perlu
+- **Jawab yang ditanya** — kalau ditanya A, jawab A. Jangan ditambah B, C, D
+- **Singkat & padat** — 1-3 paragraf cukup untuk kebanyakan pertanyaan
+- **Contoh konkret** lebih baik dari penjelasan panjang
+- **Jangan output log mentah** — cukup bilang hasilnya, jangan paste seluruh output
+- **Kalau butuh aksi user, bilang eksplisit** — contoh: "Mau saya X?" atau "Tolong Y"
 - **Direct tools untuk lookup sederhana** — cari identifier/konstan sederhana (grep, find constant) pakai tools langsung (`grep`, `read`), jangan spawn sub-agent. Sub-agent untuk search kompleks multi-repo, bukan lookup satu value.
 
 ## ⚡ Parallel Execution (multi-worker)
