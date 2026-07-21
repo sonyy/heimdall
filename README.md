@@ -1,13 +1,12 @@
 # Heimdall
 
-Telegram bot for Supertrend breakout/breakdown alerts with simulated trading and backtesting.
+Telegram bot for Supertrend breakout/breakdown alerts with backtesting.
 
 ## Quick Overview
 
 - **Real-time alerts**: Supertrend (ST) breakout/breakdown detection
-- **Simulation mode**: Dry-run trading with ST signals
 - **Backtesting**: Historical performance testing of strategies
-- **Perpetual monitoring**: Continuous market signal generation
+- **Web UI**: Web UI shows backtest results 
 - **Telegram interface**: Inline menu commands
 
 ## Tech Stack
@@ -36,10 +35,8 @@ node webui-sim.js  # Simulation UI
 
 ## Commands
 
-- `/status` - Check positions and status
-- `/signals` - View recent signals
+- `/notif` - Supertrend breakout/breakdown notification
 - `/backtest` - Run backtest on pairs
-- `/start` - Start monitoring
 
 ## Configuration
 
@@ -50,8 +47,8 @@ Edit `config.json`:
   "pollIntervalMs": 5000,
   "supertrendPeriod": 10,
   "supertrendMultiplier": 3,
-  "pairs": ["BTC/USDT", "ETH/USDT"],
-  "timeframes": ["5m", "15m", "1h"]
+  "pairs": ["BTCUSDT", "ETHUSDT"],
+  "timeframes": ["5m", "15m", "1h", "1w", "1M"]
 }
 ```
 
