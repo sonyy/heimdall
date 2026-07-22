@@ -1,0 +1,32 @@
+{
+  "pollIntervalMs": 60000,
+  "supertrendPeriod": 10,
+  "supertrendMultiplier": 3,
+  "pairs": {
+    "BTCUSDT": [
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "ETHUSDT": [
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "SOLUSDT": [
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "BNBUSDT": [
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "HYPEUSDT": [
+      "1h",
+      "4h",
+      "1d"
+    ]
+  }
+}
