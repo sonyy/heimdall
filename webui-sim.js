@@ -5,8 +5,8 @@ const renderBacktestSt = require('./lib/webui-backtest-st');
 const app = express();
 const PORT = 3030;
 
-app.get('/', (req, res) => {
-  const stHtml = renderStSimulasi();
+app.get('/', async (req, res) => {
+  const stHtml = await renderStSimulasi();
   const btHtml = renderBacktestSt();
 
   res.send(`<!DOCTYPE html>
@@ -123,9 +123,9 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-app.get('/refresh/:tab', (req, res) => {
+app.get('/refresh/:tab', async (req, res) => {
   const tab = req.params.tab;
-  if (tab === 'simulator') return res.send(renderStSimulasi());
+  if (tab === 'simulator') return res.send(await renderStSimulasi());
   if (tab === 'backtest') return res.send(renderBacktestSt());
   res.status(404).send('Not found');
 });
