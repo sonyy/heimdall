@@ -12,7 +12,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED:', reason?.message || reason);
 });
 
-const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN';
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID || 'CHAT_ID';
 const bot = new TelegramBot(BOT_TOKEN, {
   polling: { params: { allowed_updates: [], timeout: 3 } }, // timeout=3s biar menu lebih responsif
