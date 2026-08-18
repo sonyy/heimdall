@@ -3,6 +3,7 @@ const { TelegramBot } = require('node-telegram-bot-api');
 const { db, upsertConfig, getConfig, getFeatConfig, loadPairsFor } = require('./lib/db');
 const stSim = require('./lib/st-simulasi');
 const btSt = require('./lib/backtest-st');
+const fjNews = require('./lib/financialjuice');
 
 // ─── Process-level safety nets (prevent silent exits) ─────────────────────
 process.on('uncaughtException', (e) => {
@@ -24,7 +25,8 @@ bot.deleteWebhook().catch(() => {});
 // ─── Register feature modules ────────────────────────────────────────────────
 const st = stSim.register(bot, CHAT_ID);
 const bt = btSt.register(bot, CHAT_ID);
-const features = [st, bt];
+const fj = fjNews.register(bot, CHAT_ID);
+const features = [st, bt, fj];
 
 // ─── Shared sendMenu ─────────────────────────────────────────────────────────
 // When editMessageText fails (stale msg, rate limit), fallback to sendMessage.
@@ -49,6 +51,7 @@ async function sendMenu(chatId, msgId, text, opts) {
 bot.setMyCommands([
   { command: 'notif', description: 'Notifikasi Supertrend' },
   { command: 'backtest', description: 'Backtest' },
+  { command: 'fj', description: 'FinancialJuice News' },
 ]).catch(() => {});
 
 // ─── Notify user on restart ─────────────────────────────────────────────────
@@ -66,6 +69,11 @@ bot.onText(/\/start|\/notif/, (msg) => {
 bot.onText(/\/backtest/, (msg) => {
   console.log('CMD /backtest from', msg.chat.id, msg.chat.type);
   if (bt.showFeatureMenu) bt.showFeatureMenu(msg.chat.id);
+});
+
+bot.onText(/\/fj/, (msg) => {
+  console.log('CMD /fj from', msg.chat.id, msg.chat.type);
+  if (fj.showFeatureMenu) fj.showFeatureMenu(msg.chat.id);
 });
 
 // ─── Callback Query Dispatcher ───────────────────────────────────────────────
