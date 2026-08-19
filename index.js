@@ -79,6 +79,14 @@ bot.onText(/\/fj/, (msg) => {
   if (fj.showFeatureMenu) fj.showFeatureMenu(msg.chat.id);
 });
 
+bot.onText(/\/fjclear/, (msg) => {
+  console.log('CMD /fjclear from', msg.chat.id);
+  if (fj.clearSentNews) {
+    const count = fj.clearSentNews();
+    bot.sendMessage(msg.chat.id, `🗑️ Cleared ${count} sent news records. Bot will resend fresh items on next scrape.`).catch(() => {});
+  }
+});
+
 // ─── Callback Query Dispatcher ───────────────────────────────────────────────
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
