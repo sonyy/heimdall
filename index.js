@@ -73,6 +73,9 @@ bot.onText(/\/backtest/, (msg) => {
 
 bot.onText(/\/fj/, (msg) => {
   console.log('CMD /fj from', msg.chat.id, msg.chat.type);
+  if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+    fj.addFjGroupChat(msg.chat.id);
+  }
   if (fj.showFeatureMenu) fj.showFeatureMenu(msg.chat.id);
 });
 
