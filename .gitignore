@@ -6,3 +6,4 @@ heimdall.db
 heimdall.db-shm
 heimdall.db-wal
 logs/
+.env
