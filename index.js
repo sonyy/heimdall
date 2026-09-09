@@ -4,6 +4,7 @@ const { db, upsertConfig, getConfig, getFeatConfig, loadPairsFor } = require('./
 const stSim = require('./lib/st-simulasi');
 const btSt = require('./lib/backtest-st');
 const fjNews = require('./lib/financialjuice');
+const fsFlows = require('./lib/farside');
 
 // ─── Process-level safety nets (prevent silent exits) ─────────────────────
 process.on('uncaughtException', (e) => {
@@ -26,7 +27,8 @@ bot.deleteWebhook().catch(() => {});
 const st = stSim.register(bot, CHAT_ID);
 const bt = btSt.register(bot, CHAT_ID);
 const fj = fjNews.register(bot, CHAT_ID);
-const features = [st, bt, fj];
+const fsd = fsFlows.register(bot, CHAT_ID);
+const features = [st, bt, fj, fsd];
 
 // ─── Shared sendMenu ─────────────────────────────────────────────────────────
 // When editMessageText fails (stale msg, rate limit), fallback to sendMessage.
@@ -52,6 +54,7 @@ bot.setMyCommands([
   { command: 'notif', description: 'Notifikasi Supertrend' },
   { command: 'backtest', description: 'Backtest' },
   { command: 'fj', description: 'FinancialJuice News' },
+  { command: 'fs', description: 'BTC ETF Flow (Farside)' },
 ]).catch(() => {});
 
 // ─── Notify user on restart ─────────────────────────────────────────────────
@@ -84,6 +87,22 @@ bot.onText(/\/fjclear/, (msg) => {
   if (fj.clearSentNews) {
     const count = fj.clearSentNews();
     bot.sendMessage(msg.chat.id, `🗑️ Cleared ${count} sent news records. Bot will resend fresh items on next scrape.`).catch(() => {});
+  }
+});
+
+bot.onText(/\/fs/, (msg) => {
+  console.log('CMD /fs from', msg.chat.id, msg.chat.type);
+  if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+    fsd.addFsGroupChat(msg.chat.id);
+  }
+  if (fsd.showFeatureMenu) fsd.showFeatureMenu(msg.chat.id);
+});
+
+bot.onText(/\/fsclear/, (msg) => {
+  console.log('CMD /fsclear from', msg.chat.id);
+  if (fsd.clearSentFlows) {
+    const count = fsd.clearSentFlows();
+    bot.sendMessage(msg.chat.id, `🗑️ Cleared ${count} sent flow records. Bot will resend fresh records on next scrape.`).catch(() => {});
   }
 });
 
