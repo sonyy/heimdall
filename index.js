@@ -5,6 +5,8 @@ const stSim = require('./lib/st-simulasi');
 const btSt = require('./lib/backtest-st');
 const fjNews = require('./lib/financialjuice');
 const fsFlows = require('./lib/farside');
+const fwNotif = require('./lib/fedwatch');
+const rsiBot = require('./lib/rsi-bot');
 
 // ─── Process-level safety nets (prevent silent exits) ─────────────────────
 process.on('uncaughtException', (e) => {
@@ -28,7 +30,9 @@ const st = stSim.register(bot, CHAT_ID);
 const bt = btSt.register(bot, CHAT_ID);
 const fj = fjNews.register(bot, CHAT_ID);
 const fsd = fsFlows.register(bot, CHAT_ID);
-const features = [st, bt, fj, fsd];
+const fw = fwNotif.register(bot, CHAT_ID);
+const rsi = rsiBot.register(bot, CHAT_ID);
+const features = [st, bt, fj, fsd, fw, rsi];
 
 // ─── Shared sendMenu ─────────────────────────────────────────────────────────
 // When editMessageText fails (stale msg, rate limit), fallback to sendMessage.
@@ -53,8 +57,10 @@ async function sendMenu(chatId, msgId, text, opts) {
 bot.setMyCommands([
   { command: 'notif', description: 'Notifikasi Supertrend' },
   { command: 'backtest', description: 'Backtest' },
+  { command: 'rsi', description: 'RSI Auto Trading' },
   { command: 'fj', description: 'FinancialJuice News' },
   { command: 'fs', description: 'BTC ETF Flow (Farside)' },
+  { command: 'fw', description: 'CME FedWatch (Suku Bunga)' },
 ]).catch(() => {});
 
 // ─── Notify user on restart ─────────────────────────────────────────────────
@@ -72,6 +78,11 @@ bot.onText(/\/start|\/notif/, (msg) => {
 bot.onText(/\/backtest/, (msg) => {
   console.log('CMD /backtest from', msg.chat.id, msg.chat.type);
   if (bt.showFeatureMenu) bt.showFeatureMenu(msg.chat.id);
+});
+
+bot.onText(/\/rsi/, (msg) => {
+  console.log('CMD /rsi from', msg.chat.id, msg.chat.type);
+  if (rsi.showFeatureMenu) rsi.showFeatureMenu(msg.chat.id);
 });
 
 bot.onText(/\/fj/, (msg) => {
@@ -103,6 +114,22 @@ bot.onText(/\/fsclear/, (msg) => {
   if (fsd.clearSentFlows) {
     const count = fsd.clearSentFlows();
     bot.sendMessage(msg.chat.id, `🗑️ Cleared ${count} sent flow records. Bot will resend fresh records on next scrape.`).catch(() => {});
+  }
+});
+
+bot.onText(/\/fw/, (msg) => {
+  console.log('CMD /fw from', msg.chat.id, msg.chat.type);
+  if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+    fw.addFwGroupChat(msg.chat.id);
+  }
+  if (fw.showFeatureMenu) fw.showFeatureMenu(msg.chat.id);
+});
+
+bot.onText(/\/fwclear/, (msg) => {
+  console.log('CMD /fwclear from', msg.chat.id);
+  if (fw.clearFwSent) {
+    const count = fw.clearFwSent();
+    bot.sendMessage(msg.chat.id, `🗑️ Reset fedwatch baseline (${count} record). Bot will resend baseline on next poll.`).catch(() => {});
   }
 });
 
