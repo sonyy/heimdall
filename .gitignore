@@ -1,5 +1,6 @@
 node_modules/
 .env
+.omo/
 state.json
 config.json
 heimdall.db

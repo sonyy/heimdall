@@ -119,10 +119,9 @@ bot.onText(/\/fsclear/, (msg) => {
 
 bot.onText(/\/fw/, (msg) => {
   console.log('CMD /fw from', msg.chat.id, msg.chat.type);
-  if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
-    fw.addFwGroupChat(msg.chat.id);
-  }
-  if (fw.showFeatureMenu) fw.showFeatureMenu(msg.chat.id);
+  fw.addFwGroupChat(msg.chat.id);
+  if (fw.showNow) fw.showNow(msg.chat.id);
+  else if (fw.showFeatureMenu) fw.showFeatureMenu(msg.chat.id);
 });
 
 bot.onText(/\/fwclear/, (msg) => {
