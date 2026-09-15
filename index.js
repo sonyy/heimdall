@@ -119,16 +119,31 @@ bot.onText(/\/fsclear/, (msg) => {
 
 bot.onText(/\/fw/, (msg) => {
   console.log('CMD /fw from', msg.chat.id, msg.chat.type);
-  fw.addFwGroupChat(msg.chat.id);
-  if (fw.showNow) fw.showNow(msg.chat.id);
-  else if (fw.showFeatureMenu) fw.showFeatureMenu(msg.chat.id);
+  try {
+    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+      if (fw.addFwGroupChat) fw.addFwGroupChat(msg.chat.id);
+    }
+    if (fw.showNow) fw.showNow(msg.chat.id);
+    else if (fw.showFeatureMenu) fw.showFeatureMenu(msg.chat.id);
+    else bot.sendMessage(msg.chat.id, '⚠️ Fitur FedWatch belum siap.').catch(() => {});
+  } catch (e) {
+    console.error('CMD /fw error:', e.message);
+    bot.sendMessage(msg.chat.id, `❌ Error: ${String(e.message).slice(0, 120)}`).catch(() => {});
+  }
 });
 
 bot.onText(/\/fwclear/, (msg) => {
   console.log('CMD /fwclear from', msg.chat.id);
-  if (fw.clearFwSent) {
-    const count = fw.clearFwSent();
-    bot.sendMessage(msg.chat.id, `🗑️ Reset fedwatch baseline (${count} record). Bot will resend baseline on next poll.`).catch(() => {});
+  try {
+    if (fw.clearFwSent) {
+      const count = fw.clearFwSent();
+      bot.sendMessage(msg.chat.id, `🗑️ Reset fedwatch baseline (${count} record). Bot will resend baseline on next poll.`).catch(() => {});
+    } else {
+      bot.sendMessage(msg.chat.id, '⚠️ clearFwSent tidak tersedia — cek versi fedwatch.js').catch(() => {});
+    }
+  } catch (e) {
+    console.error('CMD /fwclear error:', e.message);
+    bot.sendMessage(msg.chat.id, `❌ Error: ${String(e.message).slice(0, 120)}`).catch(() => {});
   }
 });
 
