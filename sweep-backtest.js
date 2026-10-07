@@ -28,9 +28,12 @@ function calcSupertrend(candles, period, multiplier) {
   return { isBullish: direction === 1, wasBullish: prevDirection === 1 };
 }
 
+// feePct is per-side; pnl is margin-relative (%). notional = margin x leverage, so a
+// round-trip fee of feePct*2 on notional equals feePct*2*leverage on margin.
 function calcPnl(direction, entry, close, leverage, feePct) {
+  const lev = leverage || 1;
   const raw = direction === 'LONG' ? ((close - entry) / entry) * 100 : ((entry - close) / entry) * 100;
-  return raw * (leverage || 1) - (feePct || 0.05);
+  return raw * lev - (feePct === undefined ? 0.05 : feePct) * 2 * lev;
 }
 
 function calcLiqPrice(direction, entry, leverage) {
@@ -91,7 +94,7 @@ async function main() {
     });
   }
 
-  const SL_VALS = [-20, -40, -60, -80, -100];
+  const SL_VALS = [20, 40, 60, 80, 100];
   const TP_VALS = [10, 20, 40, 80, 120, 160];
   const START_CAPITAL = 1000;
 
@@ -133,13 +136,13 @@ async function main() {
       const nowBullish = sig.isBullish && aligned;
 
       if ((isCompound ? capital > 0 : capital >= c.amount) && prevBullish !== null && !prevBullish && nowBullish && !openTrade) {
-        const sl = sig.price * (1 + (c.sl / leverage) / 100);
+        const sl = sig.price * (1 - (c.sl / leverage) / 100);
         const tp1 = sig.price * (1 + (c.tp / leverage) / 100);
         openTrade = { entry: sig.price, sl, tp1, direction: 'LONG', marginSize: getMargin(capital) };
       }
 
       if ((isCompound ? capital > 0 : capital >= c.amount) && prevBullish !== null && prevBullish && !sig.isBullish && aligned && !openTrade) {
-        const sl = sig.price * (1 - (c.sl / leverage) / 100);
+        const sl = sig.price * (1 + (c.sl / leverage) / 100);
         const tp1 = sig.price * (1 - (c.tp / leverage) / 100);
         openTrade = { entry: sig.price, sl, tp1, direction: 'SHORT', marginSize: getMargin(capital) };
       }
