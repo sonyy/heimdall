@@ -124,7 +124,9 @@ async function main() {
     guardTfs.forEach(g => { gIdx[g] = 0; });
     let prevBullish = null;
 
+    let sigIdx = -1;
     for (const sig of mainSignals) {
+      sigIdx++;
       let aligned = true;
       for (const g of guardTfs) {
         const sigs = guardSignals[g];
@@ -138,16 +140,17 @@ async function main() {
       if ((isCompound ? capital > 0 : capital >= c.amount) && prevBullish !== null && !prevBullish && nowBullish && !openTrade) {
         const sl = sig.price * (1 - (c.sl / leverage) / 100);
         const tp1 = sig.price * (1 + (c.tp / leverage) / 100);
-        openTrade = { entry: sig.price, sl, tp1, direction: 'LONG', marginSize: getMargin(capital) };
+        openTrade = { entry: sig.price, sl, tp1, direction: 'LONG', entryIdx: sigIdx, marginSize: getMargin(capital) };
       }
 
       if ((isCompound ? capital > 0 : capital >= c.amount) && prevBullish !== null && prevBullish && !sig.isBullish && aligned && !openTrade) {
         const sl = sig.price * (1 + (c.sl / leverage) / 100);
         const tp1 = sig.price * (1 - (c.tp / leverage) / 100);
-        openTrade = { entry: sig.price, sl, tp1, direction: 'SHORT', marginSize: getMargin(capital) };
+        openTrade = { entry: sig.price, sl, tp1, direction: 'SHORT', entryIdx: sigIdx, marginSize: getMargin(capital) };
       }
 
-      if (openTrade) {
+      // Exit only from the candle AFTER entry (entry candle's low/high is pre-close look-ahead).
+      if (openTrade && openTrade.entryIdx !== sigIdx) {
         const liq = calcLiqPrice(openTrade.direction, openTrade.entry, leverage);
         const m = openTrade.marginSize;
         let closed = false;
